@@ -1,0 +1,9 @@
+build/
+tools/.venv/
+tools/llama.cpp/build/
+__pycache__/
+*.o
+.DS_Store
+CLAUDE.md
+.claude/*
+docs/
