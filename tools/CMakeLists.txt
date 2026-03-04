@@ -1,0 +1,2 @@
+add_executable(gguf_dump_tool gguf_dump_tool.cpp)
+target_link_libraries(gguf_dump_tool PRIVATE dbinfer_gguf)
