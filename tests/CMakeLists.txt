@@ -67,3 +67,16 @@ if(EXISTS "${TEST_GGUF}")
 else()
   message(STATUS "qwen2.5-0.5b.gguf not found — skipping tokenizer_test.")
 endif()
+
+set(QUANT_Q8 "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q8_0.gguf")
+if(EXISTS "${QUANT_Q8}" AND EXISTS "${GOLDEN_MANIFEST}")
+  add_executable(quant_logits_test quant_logits_test.cpp)
+  target_include_directories(quant_logits_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(quant_logits_test PRIVATE dbinfer_model)
+  target_compile_definitions(quant_logits_test PRIVATE
+    DBINFER_QUANT_Q8_GGUF="${QUANT_Q8}"
+    DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+  add_test(NAME quant_logits_test COMMAND quant_logits_test)
+else()
+  message(STATUS "q8_0 gguf or goldens not found — skipping quant_logits_test.")
+endif()
