@@ -136,6 +136,62 @@ int main() {
     check_le("q8_0 roundtrip", max_err, d * 0.5f + 1e-6f);
   }
 
+  using dbinfer::tensor::dequant_row_q4_0;
+
+  {
+    // low nibble of byte j is element j, high nibble is element j+16, so a
+    // distinct value per nibble catches a swapped nibble order.
+    std::byte block[18];
+    const std::uint16_t d_bits = 0x3C00; // 1.0 in fp16
+    std::memcpy(block, &d_bits, sizeof(d_bits));
+    for (int j = 0; j < 16; ++j) {
+      const std::uint8_t lo = static_cast<std::uint8_t>(j);      // 0..15
+      const std::uint8_t hi = static_cast<std::uint8_t>(15 - j); // 15..0
+      block[2 + j] = static_cast<std::byte>(lo | (hi << 4));
+    }
+    float out[32];
+    dequant_row_q4_0(block, 32, out);
+    const float d = f16_to_f32(d_bits);
+    for (int j = 0; j < 16; ++j) {
+      char name[32];
+      std::snprintf(name, sizeof name, "q4_0 lo nibble [%d]", j);
+      check_eq(name, out[j], d * static_cast<float>(j - 8));
+      std::snprintf(name, sizeof name, "q4_0 hi nibble [%d]", j);
+      check_eq(name, out[j + 16], d * static_cast<float>((15 - j) - 8));
+    }
+  }
+
+  {
+    // max magnitude 0.875 maps to level 7, so d = 0.875/7 = 0.125 exactly.
+    const float xs[32] = {0.875f,  -0.875f, 0.0f,    0.125f, -0.125f, 0.25f,  -0.5f,   0.75f,
+                          -0.625f, 0.375f,  -0.75f,  0.5f,   -0.375f, 0.625f, -0.25f,  0.125f,
+                          -0.125f, 0.75f,   -0.875f, 0.0f,   -0.5f,   0.875f, -0.75f,  0.25f,
+                          -0.625f, 0.375f,  -0.25f,  0.5f,   -0.5f,   0.625f, -0.875f, 0.75f};
+    float amax = 0.0f;
+    for (float v : xs)
+      amax = std::max(amax, std::fabs(v));
+    const float d = amax / 7.0f;
+    const std::uint16_t d_bits = 0x3000; // 0.125 in fp16, equals d exactly
+    std::byte block[18];
+    std::memcpy(block, &d_bits, sizeof(d_bits));
+    for (int j = 0; j < 16; ++j) {
+      auto pack = [&](float x) -> std::uint8_t {
+        float qf = std::round(x / d) + 8.0f;
+        qf = std::clamp(qf, 0.0f, 15.0f);
+        return static_cast<std::uint8_t>(qf);
+      };
+      const std::uint8_t lo = pack(xs[j]);
+      const std::uint8_t hi = pack(xs[j + 16]);
+      block[2 + j] = static_cast<std::byte>(lo | (hi << 4));
+    }
+    float out[32];
+    dequant_row_q4_0(block, 32, out);
+    float max_err = 0.0f;
+    for (int i = 0; i < 32; ++i)
+      max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
+    check_le("q4_0 roundtrip", max_err, d + 1e-6f);
+  }
+
   std::printf("---\n%d checks failed\n", g_failures);
   return g_failures == 0 ? 0 : 1;
 }
