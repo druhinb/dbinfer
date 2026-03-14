@@ -101,7 +101,9 @@ public:
   // runs one token through embed -> every decode_layer -> output norm -> lm
   // head, appending to this model's own KV cache. Returns a pointer to
   // logits_, valid until the next forward() call. Callers must invoke this
-  // with strictly increasing pos, once per token, prefill included.
+  // with strictly increasing pos within a sequence, once per token, prefill
+  // included. restarting pos at 0 starts a fresh sequence and overwrites the
+  // cache slots it reuses.
   const float *forward(std::int32_t token, std::int32_t pos);
 
 private:

@@ -154,6 +154,19 @@ constexpr FlagSpec kFlags[] = {
        o.print_ids = true;
        return {};
      }},
+    {"--perplexity", "", true,
+     [](CliOptions &o, std::string_view, const char *v) -> std::expected<void, sample::Error> {
+       o.perplexity_path = v;
+       return {};
+     }},
+    {"--ppl-chunks", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x <= 0)
+         return std::unexpected(must_be(f, v, "must be > 0"));
+       o.ppl_chunks = x;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -191,7 +204,7 @@ std::expected<CliOptions, sample::Error> parse_args(int argc, const char *const 
 
   if (opts.model_path.empty())
     return std::unexpected(sample::Error{"-m <model.gguf> is required"});
-  if (opts.prompt.empty())
+  if (opts.perplexity_path.empty() && opts.prompt.empty())
     return std::unexpected(sample::Error{"-p <prompt> is required"});
 
   if (auto ok = sample::validate(opts.params); !ok)
@@ -217,6 +230,8 @@ std::string usage(const char *argv0) {
   s += "  --penalty-last-n <int>  penalty window (default 64)\n";
   s += "  -s, --seed <uint>       RNG seed\n";
   s += "  --print-ids             print token ids instead of text\n";
+  s += "  --perplexity <path>     score perplexity over a text file (no -p)\n";
+  s += "  --ppl-chunks <int>      limit perplexity to N windows (default all)\n";
   return s;
 }
 
