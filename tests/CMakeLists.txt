@@ -17,6 +17,10 @@ add_executable(dequant_test dequant_test.cpp)
 target_link_libraries(dequant_test PRIVATE dbinfer_tensor)
 add_test(NAME dequant_test COMMAND dequant_test)
 
+add_executable(int8_dot_test int8_dot_test.cpp)
+target_link_libraries(int8_dot_test PRIVATE dbinfer_tensor)
+add_test(NAME int8_dot_test COMMAND int8_dot_test)
+
 add_executable(sample_test sample_test.cpp)
 target_link_libraries(sample_test PRIVATE dbinfer_sample)
 add_test(NAME sample_test COMMAND sample_test)
