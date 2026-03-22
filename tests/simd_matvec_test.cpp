@@ -56,6 +56,38 @@ void check_q4(const char *what, const std::vector<std::byte> &w, const std::vect
   }
 }
 
+bool g_i8mm = false;
+
+void check_q8_i8mm(const char *what, const std::vector<std::byte> &w,
+                   const std::vector<BlockQ8_0> &xq, std::size_t out, std::size_t in) {
+  if (!g_i8mm)
+    return;
+  std::vector<float> ref(out);
+  std::vector<float> got(out);
+  dbinfer::tensor::matvec_q8_0_scalar(w.data(), xq.data(), ref.data(), out, in);
+  dbinfer::tensor::matvec_q8_0_i8mm(w.data(), xq.data(), got.data(), out, in);
+  const float d = max_diff(ref, got);
+  if (d > kAtol) {
+    std::printf("FAIL %-24s max_diff %.3e\n", what, static_cast<double>(d));
+    ++g_failures;
+  }
+}
+
+void check_q4_i8mm(const char *what, const std::vector<std::byte> &w,
+                   const std::vector<BlockQ8_0> &xq, std::size_t out, std::size_t in) {
+  if (!g_i8mm)
+    return;
+  std::vector<float> ref(out);
+  std::vector<float> got(out);
+  dbinfer::tensor::matvec_q4_0_scalar(w.data(), xq.data(), ref.data(), out, in);
+  dbinfer::tensor::matvec_q4_0_i8mm(w.data(), xq.data(), got.data(), out, in);
+  const float d = max_diff(ref, got);
+  if (d > kAtol) {
+    std::printf("FAIL %-24s max_diff %.3e\n", what, static_cast<double>(d));
+    ++g_failures;
+  }
+}
+
 } // namespace
 
 int main() {
@@ -64,6 +96,7 @@ int main() {
     std::printf("---\n0 checks failed\n");
     return 0;
   }
+  g_i8mm = dbinfer::tensor::cpu_features().i8mm;
 
   std::mt19937 rng(0x5EEDu);
   std::uniform_real_distribution<float> scale(0.001f, 0.5f);
@@ -97,6 +130,7 @@ int main() {
       std::vector<std::byte> wb(out * nblocks * sizeof(BlockQ8_0));
       std::memcpy(wb.data(), w.data(), wb.size());
       check_q8("q8 random", wb, xq, out, in);
+      check_q8_i8mm("q8 random i8mm", wb, xq, out, in);
       q8_blocks += out * nblocks;
     }
 
@@ -110,6 +144,7 @@ int main() {
           blk[2 + j] = static_cast<std::byte>(byte(rng));
       }
       check_q4("q4 random", wb, xq, out, in);
+      check_q4_i8mm("q4 random i8mm", wb, xq, out, in);
       q4_blocks += out * nblocks;
     }
   }
@@ -126,6 +161,7 @@ int main() {
     std::vector<std::byte> wb(sizeof(BlockQ8_0));
     std::memcpy(wb.data(), w.data(), wb.size());
     check_q8("q8 zero activation", wb, xq, 1, kBlockSize);
+    check_q8_i8mm("q8 zero activation i8mm", wb, xq, 1, kBlockSize);
 
     std::vector<std::byte> w4(sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = f32_to_f16(0.25f);
@@ -133,6 +169,7 @@ int main() {
     for (std::size_t j = 0; j < 16; ++j)
       w4[2 + j] = static_cast<std::byte>(byte(rng));
     check_q4("q4 zero activation", w4, xq, 1, kBlockSize);
+    check_q4_i8mm("q4 zero activation i8mm", w4, xq, 1, kBlockSize);
   }
 
   {
@@ -144,16 +181,23 @@ int main() {
     w[0].d = f32_to_f16(0.5f);
     for (std::size_t i = 0; i < kBlockSize; ++i)
       w[0].qs[i] = (i & 1u) ? std::int8_t(-127) : std::int8_t(127);
-    std::vector<std::byte> wb(sizeof(BlockQ8_0));
-    std::memcpy(wb.data(), w.data(), wb.size());
-    check_q8("q8 saturated", wb, xq, 1, kBlockSize);
+    // two rows exercise the smmla tile at max magnitude, not the odd-row tail.
+    std::vector<BlockQ8_0> w2{w[0], w[0]};
+    std::vector<std::byte> wb2(2 * sizeof(BlockQ8_0));
+    std::memcpy(wb2.data(), w2.data(), wb2.size());
+    check_q8("q8 saturated", wb2, xq, 2, kBlockSize);
+    check_q8_i8mm("q8 saturated i8mm", wb2, xq, 2, kBlockSize);
 
-    std::vector<std::byte> w4(sizeof(dbinfer::tensor::BlockQ4_0));
+    std::vector<std::byte> w4(2 * sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = f32_to_f16(0.5f);
-    std::memcpy(w4.data(), &d, sizeof(d));
-    for (std::size_t j = 0; j < 16; ++j)
-      w4[2 + j] = static_cast<std::byte>(0x0F); // both nibbles level 15
-    check_q4("q4 saturated", w4, xq, 1, kBlockSize);
+    for (std::size_t r = 0; r < 2; ++r) {
+      std::byte *blk = w4.data() + r * sizeof(dbinfer::tensor::BlockQ4_0);
+      std::memcpy(blk, &d, sizeof(d));
+      for (std::size_t j = 0; j < 16; ++j)
+        blk[2 + j] = static_cast<std::byte>(0x0F); // both nibbles level 15
+    }
+    check_q4("q4 saturated", w4, xq, 2, kBlockSize);
+    check_q4_i8mm("q4 saturated i8mm", w4, xq, 2, kBlockSize);
   }
 
   {
@@ -168,6 +212,7 @@ int main() {
     std::vector<std::byte> wb(sizeof(BlockQ8_0));
     std::memcpy(wb.data(), w.data(), wb.size());
     check_q8("q8 denormal scale", wb, xq, 1, kBlockSize);
+    check_q8_i8mm("q8 denormal scale i8mm", wb, xq, 1, kBlockSize);
 
     std::vector<std::byte> w4(sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = 0x0002;
@@ -175,6 +220,7 @@ int main() {
     for (std::size_t j = 0; j < 16; ++j)
       w4[2 + j] = static_cast<std::byte>(byte(rng));
     check_q4("q4 denormal scale", w4, xq, 1, kBlockSize);
+    check_q4_i8mm("q4 denormal scale i8mm", w4, xq, 1, kBlockSize);
   }
 
   std::printf("q8 blocks tested %zu, q4 blocks tested %zu\n", q8_blocks, q4_blocks);
