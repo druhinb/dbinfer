@@ -118,6 +118,19 @@ int main() {
     check(!r.has_value(), "-n 0 rejected");
   }
   {
+    auto r = run({"engine", "-m", "m", "-p", "h", "--threads", "4"});
+    check(r.has_value() && r->threads == 4, "--threads 4 parses into threads");
+  }
+  {
+    auto r = run({"engine", "-m", "m", "-p", "h", "--threads", "0"});
+    check(!r.has_value() && contains(r.error().message, "--threads"), "--threads 0 rejected");
+  }
+  {
+    auto r = run({"engine", "-m", "m", "-p", "h", "--threads", "foo"});
+    check(!r.has_value() && contains(r.error().message, "--threads"),
+          "non-numeric --threads rejected");
+  }
+  {
     auto r = run({"engine", "-m", "m", "-p", "h", "--nope"});
     check(!r.has_value() && contains(r.error().message, "--nope"), "unknown --nope rejected");
   }

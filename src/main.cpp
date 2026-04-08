@@ -2,6 +2,7 @@
 #include "gguf/gguf.hpp"
 #include "model/model.hpp"
 #include "sample/sample.hpp"
+#include "tensor/thread_pool.hpp"
 #include "tokenizer/tokenizer.hpp"
 
 #include <algorithm>
@@ -117,6 +118,9 @@ int main(int argc, char **argv) {
   }
   dbinfer::model::Model &model = *mret;
   const dbinfer::tokenizer::Tokenizer &tok = *tret;
+
+  if (opts.threads > 0)
+    dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
 
   if (!opts.perplexity_path.empty())
     return run_perplexity(model, tok, opts);
