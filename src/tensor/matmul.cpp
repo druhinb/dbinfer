@@ -3,8 +3,8 @@
 #include "tensor/cpu.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul_neon.hpp"
+#include "tensor/thread_pool.hpp"
 
-#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -142,27 +142,33 @@ void matvec_f16_view(const std::byte *W, const float *x, float *y, std::size_t o
   matvec_f16(reinterpret_cast<const std::uint16_t *>(W), x, y, out, in);
 }
 
-struct QuantKernel {
-  gguf::GgmlType type;
-  void (*fn)(const std::byte *, const float *, float *, std::size_t, std::size_t);
-};
-
-constexpr std::array<QuantKernel, 4> kQuantKernels{{
-    {gguf::GgmlType::F32, matvec_f32_view},
-    {gguf::GgmlType::F16, matvec_f16_view},
-    {gguf::GgmlType::Q8_0, matvec_q8_0},
-    {gguf::GgmlType::Q4_0, matvec_q4_0},
-}};
+// even row starts keep each i8mm two-row smmla tile inside one range.
+constexpr std::size_t kRowTile = 2;
 
 } // namespace
 
 void matvec_quant(QuantMatrix w, const float *x, float *y, std::size_t out, std::size_t in) {
-  for (const auto &k : kQuantKernels)
-    if (k.type == w.type) {
-      k.fn(w.data, x, y, out, in);
-      return;
-    }
-  __builtin_unreachable(); // load validated w.type is one of the table entries
+  ThreadPool &pool = thread_pool();
+
+  if (w.type == gguf::GgmlType::Q8_0 || w.type == gguf::GgmlType::Q4_0) {
+    const bool q8 = w.type == gguf::GgmlType::Q8_0;
+    // quantize once on the caller thread, then share xq read-only across ranges.
+    const BlockQ8_0 *xq = quantize_activation(x, in);
+    const QuantDispatch &d = quant_dispatch();
+    const QuantDot kern = q8 ? d.q8 : d.q4;
+    const std::size_t row_bytes = (in / kBlockSize) * (q8 ? sizeof(BlockQ8_0) : sizeof(BlockQ4_0));
+    parallel_for(pool, out, kRowTile, [&](std::size_t rb, std::size_t re) {
+      kern(w.data + rb * row_bytes, xq, y + rb, re - rb, in);
+    });
+    return;
+  }
+
+  const bool f16 = w.type == gguf::GgmlType::F16;
+  const std::size_t row_bytes = in * (f16 ? sizeof(std::uint16_t) : sizeof(float));
+  const auto kern = f16 ? matvec_f16_view : matvec_f32_view;
+  parallel_for(pool, out, kRowTile, [&](std::size_t rb, std::size_t re) {
+    kern(w.data + rb * row_bytes, x, y + rb, re - rb, in);
+  });
 }
 
 void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t out,
