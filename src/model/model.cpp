@@ -3,6 +3,7 @@
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
 #include "tensor/ops.hpp"
+#include "tensor/thread_pool.hpp"
 
 #include <cmath>
 #include <optional>
@@ -289,7 +290,7 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
   m.v_.assign(cfg.n_kv_heads * hd, 0.0f);
   m.attn_.assign(cfg.n_heads * hd, 0.0f);
   m.proj_.assign(dim, 0.0f);
-  m.scores_.assign(cfg.context_length, 0.0f);
+  m.scores_.assign(cfg.n_heads * cfg.context_length, 0.0f);
   m.ffn_gate_.assign(ff, 0.0f);
   m.ffn_up_.assign(ff, 0.0f);
   m.ffn_down_.assign(dim, 0.0f);
@@ -335,30 +336,34 @@ void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache 
 
   const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
   const std::size_t last = static_cast<std::size_t>(pos);
-  for (std::size_t h = 0; h < nh; ++h) {
-    const std::size_t kh = h / gqa;
-    const float *qh = q_.data() + h * hd;
-    for (std::size_t pp = 0; pp <= last; ++pp) {
-      const float *kp = kv.key(layer, pp, kh);
-      float dot = 0.0f;
+  const std::size_t cl = cfg_.context_length;
+  tensor::parallel_for(tensor::thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
+    for (std::size_t h = hbegin; h < hend; ++h) {
+      const std::size_t kh = h / gqa;
+      const float *qh = q_.data() + h * hd;
+      float *sc = scores_.data() + h * cl;
+      for (std::size_t pp = 0; pp <= last; ++pp) {
+        const float *kp = kv.key(layer, pp, kh);
+        float dot = 0.0f;
+        for (std::size_t i = 0; i < hd; ++i)
+          dot += qh[i] * kp[i];
+        sc[pp] = dot * scale;
+      }
+      tensor::softmax(sc, sc, last + 1);
+      float *outh = attn_.data() + h * hd;
       for (std::size_t i = 0; i < hd; ++i)
-        dot += qh[i] * kp[i];
-      scores_[pp] = dot * scale;
+        outh[i] = 0.0f;
+      for (std::size_t pp = 0; pp <= last; ++pp) {
+        const float *vp = kv.value(layer, pp, kh);
+        const float w = sc[pp];
+        for (std::size_t i = 0; i < hd; ++i)
+          outh[i] += w * vp[i];
+      }
+      if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0)
+        for (std::size_t i = 0; i < hd; ++i)
+          dbg->attn_head0[i] = outh[i];
     }
-    tensor::softmax(scores_.data(), scores_.data(), last + 1);
-    float *outh = attn_.data() + h * hd;
-    for (std::size_t i = 0; i < hd; ++i)
-      outh[i] = 0.0f;
-    for (std::size_t pp = 0; pp <= last; ++pp) {
-      const float *vp = kv.value(layer, pp, kh);
-      const float w = scores_[pp];
-      for (std::size_t i = 0; i < hd; ++i)
-        outh[i] += w * vp[i];
-    }
-    if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0)
-      for (std::size_t i = 0; i < hd; ++i)
-        dbg->attn_head0[i] = outh[i];
-  }
+  });
 
   tensor::matvec_quant(L.attn_output, attn_.data(), proj_.data(), dim, nh * hd);
   for (std::size_t i = 0; i < dim; ++i)
