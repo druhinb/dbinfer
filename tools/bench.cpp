@@ -3,6 +3,7 @@
 #include "tensor/cpu.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul_neon.hpp"
+#include "tensor/thread_pool.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -71,22 +72,26 @@ int main(int argc, char **argv) {
   std::printf("model %s  dotprod=%d i8mm=%d\n", path, feat.dotprod, feat.i8mm);
 
   const std::int32_t tok = 40;
-  std::vector<double> pre_rates;
-  std::vector<double> dec_rates;
-  for (int run = 0; run < 5; ++run) {
-    std::int32_t pos = 0;
-    const auto t0 = clock_type::now();
-    for (int i = 0; i < n_pre; ++i)
-      model.forward(tok, pos++);
-    const auto t1 = clock_type::now();
-    for (int i = 0; i < n_dec; ++i)
-      model.forward(tok, pos++);
-    const auto t2 = clock_type::now();
-    pre_rates.push_back(static_cast<double>(n_pre) / seconds(t0, t1));
-    dec_rates.push_back(static_cast<double>(n_dec) / seconds(t1, t2));
+  for (std::size_t nt = 1; nt <= dbinfer::tensor::p_core_count(); ++nt) {
+    dbinfer::tensor::configure_thread_count(nt);
+    std::vector<double> pre_rates;
+    std::vector<double> dec_rates;
+    for (int run = 0; run < 5; ++run) {
+      std::int32_t pos = 0;
+      const auto t0 = clock_type::now();
+      for (int i = 0; i < n_pre; ++i)
+        model.forward(tok, pos++);
+      const auto t1 = clock_type::now();
+      for (int i = 0; i < n_dec; ++i)
+        model.forward(tok, pos++);
+      const auto t2 = clock_type::now();
+      pre_rates.push_back(static_cast<double>(n_pre) / seconds(t0, t1));
+      dec_rates.push_back(static_cast<double>(n_dec) / seconds(t1, t2));
+    }
+    std::printf("threads %zu: prefill %.2f tok/s  decode %.2f tok/s\n", nt, median(pre_rates),
+                median(dec_rates));
   }
-  std::printf("prefill %.2f tok/s (%d tok, median of 5)\n", median(pre_rates), n_pre);
-  std::printf("decode  %.2f tok/s (%d tok, median of 5)\n", median(dec_rates), n_dec);
+  dbinfer::tensor::configure_thread_count(1);
 
   // isolate the quant kernel at m=1 on the ffn shape, sdot against i8mm.
   const std::size_t in = cfg.embedding_length;
