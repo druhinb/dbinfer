@@ -110,3 +110,31 @@ and model_test ran with no data-race reports. model_test drives the auto-threade
 decode_layer and matvec_quant path against the goldens (embedding, attention,
 layer output, logits). matvec_determinism_test is elided under TSan for runtime;
 model_test covers the same threaded kernels in seconds.
+
+## Phase 6 (k-quant perplexity)
+
+WikiText-2 test, n_ctx 512, non-overlapping windows, oracle pinned to fp32 kv.
+q4_k_m is the mixed llama.cpp quant (132 q5_0, 13 q8_0, 12 q4_k, 12 q6_k here).
+engine vs llama-perplexity on the same gguf:
+
+  q4_k_m  16 chunks   engine 18.1301   oracle 18.0497   +0.45%
+  q4_k_m   4 chunks   engine 13.5675   oracle 13.4804   +0.65%
+  q6_k    16 chunks   engine 17.7689   oracle 17.6720   +0.55%
+  q6_k     4 chunks   engine 13.3314   oracle 13.2303   +0.76%
+
+all within the 1% weight-quant budget (docs/VERIFICATION.md layer 4).
+
+## Phase 6 (Accelerate prefill)
+
+matmul_accel dequantizes the weight once then issues one cblas_sgemm
+(-framework Accelerate, DBINFER_HAVE_ACCELERATE). measured against the scalar
+reference matmul (the naive triple loop, not the NEON matvec) on a 512-row
+batch, tests/accel_matmul_test. M3 Max, single call, average of 20.
+
+  matmul [m=512 out=512 in=896]   scalar 156.463 ms   accel 0.316 ms   494x
+
+max abs error accel vs scalar 1.5e-5, within the 1e-3 GEMM tolerance. the
+wrapper is not wired into forward(): decode still runs one token at a time, so
+the default decode path and its perplexity are byte-for-byte unchanged. the
+figure sizes the headroom a batched prefill would unlock against the scalar
+reference, and is the reason llama-bench's pp512 outruns this engine.

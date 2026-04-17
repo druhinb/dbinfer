@@ -28,6 +28,9 @@ Already checked out and built, CPU-only, pinned in `tools/LLAMACPP_VERSION`
   so `tools/dump_reference.py` regenerates golden tensors offline.
 - `tools/llama.cpp/models/ggml-vocab-*.gguf` are vocab-only files for
   tokenizer tests, not weight models.
+- Q4_K_M is a mixed quant. For this 0.5B model it is 132 Q5_0 + 13 Q8_0 +
+  12 Q4_K + 12 Q6_K tensors, because k-quants need 256-divisible rows and
+  most tensors fall back to Q5_0. Loading it requires Q5_0 support.
 
 ## Python
 
