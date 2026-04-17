@@ -86,6 +86,12 @@ int main() {
 #ifdef DBINFER_DET_Q4
   check("Q4_0", DBINFER_DET_Q4, ids, P);
 #endif
+#ifdef DBINFER_DET_Q6K
+  check("Q6_K", DBINFER_DET_Q6K, ids, P);
+#endif
+#ifdef DBINFER_DET_Q4K
+  check("Q4_K_M", DBINFER_DET_Q4K, ids, P);
+#endif
 
   std::printf("---\n%d checks failed\n", g_failures);
   return g_failures == 0 ? 0 : 1;
