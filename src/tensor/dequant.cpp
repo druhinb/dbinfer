@@ -116,6 +116,111 @@ void dequant_row_q4_0(const std::byte *block_base, std::size_t in, float *out) {
   }
 }
 
+void dequant_row_q5_0(const std::byte *block_base, std::size_t in, float *out) {
+  const std::size_t nblocks = in / kBlockSize;
+  for (std::size_t b = 0; b < nblocks; ++b) {
+    const std::byte *blk = block_base + b * sizeof(BlockQ5_0);
+    std::uint16_t d_bits = 0;
+    std::uint32_t qh = 0;
+    std::memcpy(&d_bits, blk, sizeof(d_bits));
+    std::memcpy(&qh, blk + 2, sizeof(qh));
+    const float d = f16_to_f32(d_bits);
+    // dequantize_row_q5_0 in ggml-quants.c: the fifth bit for element j+16
+    // lands at position 4 after the >>(j+12) shift.
+    for (std::size_t j = 0; j < 16; ++j) {
+      const std::uint8_t q = static_cast<std::uint8_t>(blk[6 + j]);
+      const std::uint32_t xh0 = ((qh >> j) << 4) & 0x10u;
+      const std::uint32_t xh1 = (qh >> (j + 12)) & 0x10u;
+      const int x0 = static_cast<int>((q & 0x0Fu) | xh0) - 16;
+      const int x1 = static_cast<int>((q >> 4) | xh1) - 16;
+      out[b * kBlockSize + j] = d * static_cast<float>(x0);
+      out[b * kBlockSize + j + 16] = d * static_cast<float>(x1);
+    }
+  }
+}
+
+namespace {
+
+// get_scale_min_k4 from ggml-quants.c: the 6-bit scale and min for sub-block j
+// are packed across scales[0..11], the top two bits reused for the high nibbles.
+void scale_min_k4(int j, const std::uint8_t *scales, std::uint8_t &sc, std::uint8_t &m) {
+  if (j < 4) {
+    sc = scales[j] & 63;
+    m = scales[j + 4] & 63;
+  } else {
+    sc = (scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4);
+    m = (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4);
+  }
+}
+
+} // namespace
+
+void dequant_row_q4_k(const std::byte *block_base, std::size_t in, float *out) {
+  const std::size_t nsb = in / kSuperBlockSize;
+  for (std::size_t s = 0; s < nsb; ++s) {
+    const std::byte *blk = block_base + s * sizeof(BlockQ4_K);
+    std::uint16_t d_bits = 0, dmin_bits = 0;
+    std::memcpy(&d_bits, blk, sizeof(d_bits));
+    std::memcpy(&dmin_bits, blk + 2, sizeof(dmin_bits));
+    const float d = f16_to_f32(d_bits);
+    const float dmin = f16_to_f32(dmin_bits);
+    std::uint8_t scales[12];
+    std::memcpy(scales, blk + 4, sizeof(scales));
+    const std::byte *qs = blk + 16;
+    float *y = out + s * kSuperBlockSize;
+    int is = 0;
+    for (std::size_t j = 0; j < kSuperBlockSize; j += 64) {
+      std::uint8_t sc = 0, mm = 0, sc2 = 0, mm2 = 0;
+      scale_min_k4(is + 0, scales, sc, mm);
+      scale_min_k4(is + 1, scales, sc2, mm2);
+      const float d1 = d * sc, m1 = dmin * mm;
+      const float d2 = d * sc2, m2 = dmin * mm2;
+      for (std::size_t l = 0; l < 32; ++l) {
+        const std::uint8_t q = static_cast<std::uint8_t>(qs[l]);
+        y[j + l] = d1 * static_cast<float>(q & 0xF) - m1;
+        y[j + l + 32] = d2 * static_cast<float>(q >> 4) - m2;
+      }
+      qs += 32;
+      is += 2;
+    }
+  }
+}
+
+void dequant_row_q6_k(const std::byte *block_base, std::size_t in, float *out) {
+  const std::size_t nsb = in / kSuperBlockSize;
+  for (std::size_t s = 0; s < nsb; ++s) {
+    const std::byte *blk = block_base + s * sizeof(BlockQ6_K);
+    std::uint16_t d_bits = 0;
+    std::memcpy(&d_bits, blk + 208, sizeof(d_bits));
+    const float d = f16_to_f32(d_bits);
+    const std::byte *ql = blk;
+    const std::byte *qh = blk + 128;
+    std::int8_t scales[16];
+    std::memcpy(scales, blk + 192, sizeof(scales));
+    float *y = out + s * kSuperBlockSize;
+    const std::int8_t *sc = scales;
+    for (std::size_t n = 0; n < kSuperBlockSize; n += 128) {
+      for (std::size_t l = 0; l < 32; ++l) {
+        const int is = static_cast<int>(l / 16);
+        const std::uint8_t low = static_cast<std::uint8_t>(ql[l]);
+        const std::uint8_t low2 = static_cast<std::uint8_t>(ql[l + 32]);
+        const std::uint8_t high = static_cast<std::uint8_t>(qh[l]);
+        const int q1 = static_cast<int>((low & 0xF) | (((high >> 0) & 3) << 4)) - 32;
+        const int q2 = static_cast<int>((low2 & 0xF) | (((high >> 2) & 3) << 4)) - 32;
+        const int q3 = static_cast<int>((low >> 4) | (((high >> 4) & 3) << 4)) - 32;
+        const int q4 = static_cast<int>((low2 >> 4) | (((high >> 6) & 3) << 4)) - 32;
+        y[n + l] = d * sc[is + 0] * static_cast<float>(q1);
+        y[n + l + 32] = d * sc[is + 2] * static_cast<float>(q2);
+        y[n + l + 64] = d * sc[is + 4] * static_cast<float>(q3);
+        y[n + l + 96] = d * sc[is + 6] * static_cast<float>(q4);
+      }
+      ql += 64;
+      qh += 32;
+      sc += 8;
+    }
+  }
+}
+
 void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out) {
   switch (w.type) {
   case gguf::GgmlType::F32: {
@@ -136,6 +241,15 @@ void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out) {
     return;
   case gguf::GgmlType::Q4_0:
     dequant_row_q4_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ4_0), in, out);
+    return;
+  case gguf::GgmlType::Q5_0:
+    dequant_row_q5_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ5_0), in, out);
+    return;
+  case gguf::GgmlType::Q4_K:
+    dequant_row_q4_k(w.data + row * (in / kSuperBlockSize) * sizeof(BlockQ4_K), in, out);
+    return;
+  case gguf::GgmlType::Q6_K:
+    dequant_row_q6_k(w.data + row * (in / kSuperBlockSize) * sizeof(BlockQ6_K), in, out);
     return;
   default:
     __builtin_unreachable(); // load validated w.type is one of the above
