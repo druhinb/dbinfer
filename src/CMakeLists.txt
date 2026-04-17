@@ -19,6 +19,14 @@ target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf Threads::Threads)
 set_source_files_properties(tensor/matmul_neon.cpp
   PROPERTIES COMPILE_OPTIONS "-march=armv8.2-a+dotprod+i8mm")
 
+# Accelerate provides cblas_sgemm for the batched prefill path. absent off Apple,
+# where matmul_accel falls back to the scalar reduction.
+find_library(ACCELERATE_LIBRARY Accelerate)
+if(ACCELERATE_LIBRARY)
+  target_link_libraries(dbinfer_tensor PUBLIC ${ACCELERATE_LIBRARY})
+  target_compile_definitions(dbinfer_tensor PUBLIC DBINFER_HAVE_ACCELERATE)
+endif()
+
 add_library(dbinfer_tokenizer STATIC
   tokenizer/tokenizer.cpp
   tokenizer/bpe.cpp
