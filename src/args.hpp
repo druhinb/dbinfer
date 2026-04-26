@@ -15,7 +15,10 @@ struct CliOptions {
   int ppl_chunks = 0;          // 0 means all windows
   int n = 128;
   int threads = 0; // 0 means auto (P-core count)
+  int kv_sink = 4;
+  int kv_window = 0; // >0 selects the ring-buffer KV cache
   bool print_ids = false;
+  bool ppl_stream = false;
   sample::SamplerParams params;
 };
 

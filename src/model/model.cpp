@@ -5,6 +5,7 @@
 #include "tensor/ops.hpp"
 #include "tensor/thread_pool.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -93,27 +94,52 @@ bool is_weight_type(GgmlType type) {
 } // namespace
 
 KVCache::KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_heads,
-                 std::size_t head_dim)
-    : layer_stride_(max_seq * n_kv_heads * head_dim), pos_stride_(n_kv_heads * head_dim),
+                 std::size_t head_dim, KvPolicy policy)
+    : policy_(policy), capacity_(policy.window > 0 ? policy.n_sink + policy.window : max_seq),
+      layer_stride_(capacity_ * n_kv_heads * head_dim), pos_stride_(n_kv_heads * head_dim),
       n_kv_heads_(n_kv_heads), head_dim_(head_dim) {
   k_.assign(n_layers * layer_stride_, 0.0f);
   v_.assign(n_layers * layer_stride_, 0.0f);
 }
 
+std::size_t KVCache::slot_for(std::size_t pos) const {
+  if (pos < policy_.n_sink)
+    return pos;
+  return policy_.n_sink + (pos - policy_.n_sink) % policy_.window;
+}
+
 void KVCache::append(std::size_t layer, std::size_t pos, const float *k, const float *v) {
-  const std::size_t base = layer * layer_stride_ + pos * pos_stride_;
+  const std::size_t slot = ring() ? slot_for(pos) : pos;
+  const std::size_t base = layer * layer_stride_ + slot * pos_stride_;
   for (std::size_t i = 0; i < pos_stride_; ++i) {
     k_[base + i] = k[i];
     v_[base + i] = v[i];
   }
+  n_seen_ = pos + 1;
 }
 
-const float *KVCache::key(std::size_t layer, std::size_t pos, std::size_t kv_head) const {
-  return k_.data() + layer * layer_stride_ + pos * pos_stride_ + kv_head * head_dim_;
+std::size_t KVCache::residents(Resident *out) const {
+  const std::size_t n_sink = policy_.n_sink;
+  const std::size_t window = policy_.window;
+  const std::size_t sinks = std::min(n_seen_, n_sink);
+  std::size_t count = 0;
+  for (std::size_t t = 0; t < sinks; ++t)
+    out[count++] = {t, static_cast<std::int32_t>(t)};
+
+  std::size_t window_start = n_sink;
+  if (n_seen_ > n_sink && n_seen_ - n_sink > window)
+    window_start = n_seen_ - window;
+  for (std::size_t t = window_start; t < n_seen_; ++t)
+    out[count++] = {slot_for(t), static_cast<std::int32_t>(n_sink + (t - window_start))};
+  return count;
 }
 
-const float *KVCache::value(std::size_t layer, std::size_t pos, std::size_t kv_head) const {
-  return v_.data() + layer * layer_stride_ + pos * pos_stride_ + kv_head * head_dim_;
+const float *KVCache::key(std::size_t layer, std::size_t slot, std::size_t kv_head) const {
+  return k_.data() + layer * layer_stride_ + slot * pos_stride_ + kv_head * head_dim_;
+}
+
+const float *KVCache::value(std::size_t layer, std::size_t slot, std::size_t kv_head) const {
+  return v_.data() + layer * layer_stride_ + slot * pos_stride_ + kv_head * head_dim_;
 }
 
 std::expected<Model, Error> Model::load(const GgufFile &file) {
@@ -324,9 +350,16 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
   m.ffn_up_.assign(ff, 0.0f);
   m.ffn_down_.assign(dim, 0.0f);
   m.logits_.assign(cfg.vocab_size, 0.0f);
+  m.resident_.assign(cfg.context_length, {});
   m.kv_ = KVCache(cfg.n_layers, cfg.context_length, cfg.n_kv_heads, hd);
 
   return m;
+}
+
+void Model::configure_kv(KvPolicy policy) {
+  kv_ = KVCache(cfg_.n_layers, cfg_.context_length, cfg_.n_kv_heads, cfg_.head_dim, policy);
+  scores_.assign(cfg_.n_heads * kv_.capacity(), 0.0f);
+  resident_.assign(kv_.capacity(), {});
 }
 
 void Model::embed(std::int32_t token, float *out) const {
@@ -357,42 +390,85 @@ void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache 
     for (std::size_t i = 0; i < nkv * hd; ++i)
       v_[i] += L.attn_v_bias[i];
 
-  const std::int32_t p = pos;
-  tensor::rope(q_.data(), &p, cfg_.rope_theta, nh, 1, hd);
-  tensor::rope(k_.data(), &p, cfg_.rope_theta, nkv, 1, hd);
-
-  kv.append(layer, static_cast<std::size_t>(pos), k_.data(), v_.data());
-
   const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-  const std::size_t last = static_cast<std::size_t>(pos);
-  const std::size_t cl = cfg_.context_length;
-  tensor::parallel_for(tensor::thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
-    for (std::size_t h = hbegin; h < hend; ++h) {
-      const std::size_t kh = h / gqa;
-      const float *qh = q_.data() + h * hd;
-      float *sc = scores_.data() + h * cl;
-      for (std::size_t pp = 0; pp <= last; ++pp) {
-        const float *kp = kv.key(layer, pp, kh);
-        float dot = 0.0f;
+
+  if (!kv.ring()) {
+    const std::int32_t p = pos;
+    tensor::rope(q_.data(), &p, cfg_.rope_theta, nh, 1, hd);
+    tensor::rope(k_.data(), &p, cfg_.rope_theta, nkv, 1, hd);
+
+    kv.append(layer, static_cast<std::size_t>(pos), k_.data(), v_.data());
+
+    const std::size_t last = static_cast<std::size_t>(pos);
+    const std::size_t cl = cfg_.context_length;
+    tensor::parallel_for(tensor::thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
+      for (std::size_t h = hbegin; h < hend; ++h) {
+        const std::size_t kh = h / gqa;
+        const float *qh = q_.data() + h * hd;
+        float *sc = scores_.data() + h * cl;
+        for (std::size_t pp = 0; pp <= last; ++pp) {
+          const float *kp = kv.key(layer, pp, kh);
+          float dot = 0.0f;
+          for (std::size_t i = 0; i < hd; ++i)
+            dot += qh[i] * kp[i];
+          sc[pp] = dot * scale;
+        }
+        tensor::softmax(sc, sc, last + 1);
+        float *outh = attn_.data() + h * hd;
         for (std::size_t i = 0; i < hd; ++i)
-          dot += qh[i] * kp[i];
-        sc[pp] = dot * scale;
+          outh[i] = 0.0f;
+        for (std::size_t pp = 0; pp <= last; ++pp) {
+          const float *vp = kv.value(layer, pp, kh);
+          const float w = sc[pp];
+          for (std::size_t i = 0; i < hd; ++i)
+            outh[i] += w * vp[i];
+        }
+        if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0)
+          for (std::size_t i = 0; i < hd; ++i)
+            dbg->attn_head0[i] = outh[i];
       }
-      tensor::softmax(sc, sc, last + 1);
-      float *outh = attn_.data() + h * hd;
-      for (std::size_t i = 0; i < hd; ++i)
-        outh[i] = 0.0f;
-      for (std::size_t pp = 0; pp <= last; ++pp) {
-        const float *vp = kv.value(layer, pp, kh);
-        const float w = sc[pp];
+    });
+  } else {
+    kv.append(layer, static_cast<std::size_t>(pos), k_.data(), v_.data());
+    const std::size_t n_res = kv.residents(resident_.data());
+    const std::int32_t q_pos = resident_[n_res - 1].rope_pos;
+    tensor::rope(q_.data(), &q_pos, cfg_.rope_theta, nh, 1, hd);
+
+    const std::size_t stride = kv.capacity();
+    const KVCache::Resident *res = resident_.data();
+    tensor::parallel_for(tensor::thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
+      std::vector<float> kbuf(hd, 0.0f);
+      for (std::size_t h = hbegin; h < hend; ++h) {
+        const std::size_t kh = h / gqa;
+        const float *qh = q_.data() + h * hd;
+        float *sc = scores_.data() + h * stride;
+        for (std::size_t r = 0; r < n_res; ++r) {
+          const float *kp = kv.key(layer, res[r].slot, kh);
+          for (std::size_t i = 0; i < hd; ++i)
+            kbuf[i] = kp[i];
+          const std::int32_t rp = res[r].rope_pos;
+          tensor::rope(kbuf.data(), &rp, cfg_.rope_theta, 1, 1, hd);
+          float dot = 0.0f;
+          for (std::size_t i = 0; i < hd; ++i)
+            dot += qh[i] * kbuf[i];
+          sc[r] = dot * scale;
+        }
+        tensor::softmax(sc, sc, n_res);
+        float *outh = attn_.data() + h * hd;
         for (std::size_t i = 0; i < hd; ++i)
-          outh[i] += w * vp[i];
+          outh[i] = 0.0f;
+        for (std::size_t r = 0; r < n_res; ++r) {
+          const float *vp = kv.value(layer, res[r].slot, kh);
+          const float w = sc[r];
+          for (std::size_t i = 0; i < hd; ++i)
+            outh[i] += w * vp[i];
+        }
+        if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0)
+          for (std::size_t i = 0; i < hd; ++i)
+            dbg->attn_head0[i] = outh[i];
       }
-      if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0)
-        for (std::size_t i = 0; i < hd; ++i)
-          dbg->attn_head0[i] = outh[i];
-    }
-  });
+    });
+  }
 
   tensor::matvec_quant(L.attn_output, attn_.data(), proj_.data(), dim, nh * hd);
   for (std::size_t i = 0; i < dim; ++i)

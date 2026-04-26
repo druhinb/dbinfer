@@ -138,3 +138,30 @@ wrapper is not wired into forward(): decode still runs one token at a time, so
 the default decode path and its perplexity are byte-for-byte unchanged. the
 figure sizes the headroom a batched prefill would unlock against the scalar
 reference, and is the reason llama-bench's pp512 outruns this engine.
+
+## Phase 7 (KV cache streaming) — 2026-07-19
+
+Ring-buffer KV cache with attention sinks (StreamingLLM), behind --kv-window.
+Streaming perplexity feeds one continuous context with monotonically rising
+position, per-token NLL bucketed every 512 positions. WikiText-2 test,
+qwen2.5-0.5b F16, window 256, first 8 buckets (4096 tokens).
+
+  ./build/release/engine -m qwen2.5-0.5b.gguf --perplexity wiki.test.raw \
+    --ppl-stream --kv-window 256 --kv-sink {0,4} --ppl-chunks 8
+
+  pos          naive (sink 0)   sinks (sink 4)
+  0-511            95.6956          16.2858
+  512-1023         93.9265          19.4518
+  1024-1535       105.8915          17.3745
+  1536-2047        90.3526          18.2041
+  2048-2559        78.8882          14.3412
+  2560-3071       117.9712          19.4920
+  3072-3583       115.2568          18.2693
+  3584-4095       114.7031          21.7222
+  stream PPL      100.704792        18.018553
+
+past the 256-token window the naive ring evicts the initial tokens and stays
+stuck near 90-118. four pinned sinks hold it flat at 14-22, tracking the dense
+full-context range. sinks are the whole difference; without them the ring is
+unusable. --ppl-stream requires --kv-window > 0 (the dense cache would run pos
+past context_length). default decode, parity, and dense perplexity unchanged.

@@ -89,6 +89,68 @@ int run_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Token
   return 0;
 }
 
+// streaming perplexity: one continuous context with monotonically increasing
+// position, no window resets. per-token NLL bucketed by position exposes
+// whether a ring cache stays flat or diverges as position passes the window.
+int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Tokenizer &tok,
+                          const dbinfer::cli::CliOptions &opts) {
+  auto text = read_file(opts.perplexity_path.c_str());
+  if (!text) {
+    std::fprintf(stderr, "error: cannot read %s\n", opts.perplexity_path.c_str());
+    return 1;
+  }
+
+  std::vector<std::int32_t> tokens = tok.encode(*text, /*add_special=*/false);
+  const std::int32_t bos = tok.bos_id();
+  if (bos >= 0)
+    tokens.insert(tokens.begin(), bos);
+  if (tokens.size() < 2) {
+    std::fprintf(stderr, "error: need at least 2 tokens, got %zu\n", tokens.size());
+    return 1;
+  }
+
+  constexpr std::size_t bucket_size = 512;
+  const std::size_t vocab = model.config().vocab_size;
+  std::size_t limit = tokens.size();
+  if (opts.ppl_chunks > 0 && static_cast<std::size_t>(opts.ppl_chunks) * bucket_size < limit)
+    limit = static_cast<std::size_t>(opts.ppl_chunks) * bucket_size;
+
+  model.reset_kv();
+  std::vector<double> bucket_nll;
+  std::vector<std::size_t> bucket_count;
+  double nll = 0.0;
+  std::size_t count = 0;
+  for (std::size_t j = 0; j + 1 < limit; ++j) {
+    const float *logits = model.forward(tokens[j], static_cast<std::int32_t>(j));
+    float max_logit = logits[0];
+    for (std::size_t i = 1; i < vocab; ++i)
+      max_logit = std::max(max_logit, logits[i]);
+    double sum_exp = 0.0;
+    for (std::size_t i = 0; i < vocab; ++i)
+      sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+    const double logsumexp = static_cast<double>(max_logit) + std::log(sum_exp);
+    const std::int32_t target = tokens[j + 1];
+    const double token_nll = logsumexp - static_cast<double>(logits[target]);
+
+    const std::size_t b = j / bucket_size;
+    if (b >= bucket_nll.size()) {
+      bucket_nll.resize(b + 1, 0.0);
+      bucket_count.resize(b + 1, 0);
+    }
+    bucket_nll[b] += token_nll;
+    ++bucket_count[b];
+    nll += token_nll;
+    ++count;
+  }
+
+  for (std::size_t b = 0; b < bucket_nll.size(); ++b)
+    std::fprintf(stderr, "pos %zu-%zu ppl %.4f\n", b * bucket_size, (b + 1) * bucket_size - 1,
+                 std::exp(bucket_nll[b] / static_cast<double>(bucket_count[b])));
+
+  std::printf("stream PPL = %.6f  tokens %zu\n", std::exp(nll / static_cast<double>(count)), count);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -122,8 +184,13 @@ int main(int argc, char **argv) {
   if (opts.threads > 0)
     dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
 
+  if (opts.kv_window > 0)
+    model.configure_kv({static_cast<std::size_t>(opts.kv_sink),
+                        static_cast<std::size_t>(opts.kv_window), dbinfer::model::KvDtype::F32});
+
   if (!opts.perplexity_path.empty())
-    return run_perplexity(model, tok, opts);
+    return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
+                           : run_perplexity(model, tok, opts);
 
   std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
   if (history.empty()) {

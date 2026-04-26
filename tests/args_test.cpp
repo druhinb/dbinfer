@@ -141,6 +141,27 @@ int main() {
   }
 
   {
+    auto r = run({"engine", "-m", "m", "--perplexity", "t", "--ppl-stream", "--kv-window", "256",
+                  "--kv-sink", "8"});
+    check(r.has_value() && r->ppl_stream && r->kv_window == 256 && r->kv_sink == 8,
+          "--ppl-stream/--kv-window/--kv-sink parse into fields");
+  }
+  {
+    auto r = run({"engine", "-m", "m", "--perplexity", "t", "--ppl-stream"});
+    check(!r.has_value() && contains(r.error().message, "--ppl-stream") &&
+              contains(r.error().message, "--kv-window"),
+          "--ppl-stream without --kv-window rejected");
+  }
+  {
+    auto r = run({"engine", "-m", "m", "-p", "h", "--kv-window", "-1"});
+    check(!r.has_value() && contains(r.error().message, "--kv-window"), "--kv-window -1 rejected");
+  }
+  {
+    auto r = run({"engine", "-m", "m", "-p", "h", "--kv-sink", "-1"});
+    check(!r.has_value() && contains(r.error().message, "--kv-sink"), "--kv-sink -1 rejected");
+  }
+
+  {
     auto r = run({"engine",     "-m",
                   "model.gguf", "-p",
                   "hi",         "--temp",
