@@ -1,6 +1,7 @@
 #ifndef DBINFER_TENSOR_THREAD_POOL_HPP
 #define DBINFER_TENSOR_THREAD_POOL_HPP
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
@@ -10,8 +11,11 @@
 
 namespace dbinfer::tensor {
 
-// fixed pool of worker threads that block on a condition variable until a task
-// is published, then divide one index range among themselves and the caller.
+// fixed pool of worker threads that spin on an atomic generation counter until
+// a task is published, then divide one index range among themselves and the
+// caller. workers fall back to a condition variable only after a bounded spin,
+// so the tightly-spaced barriers of one decode step stay lock-free while an
+// idle pool still parks instead of burning cores.
 class ThreadPool {
 public:
   using TaskFn = void (*)(void *, std::size_t, std::size_t);
@@ -29,15 +33,18 @@ public:
 
 private:
   void worker_loop(std::size_t idx);
+  std::size_t wait_for_work(std::size_t seen);
 
   std::size_t count_;
+  // task fields are published before the generation_ release store and read
+  // after the matching acquire load, so workers see them without the lock.
   TaskFn fn_ = nullptr;
   void *ctx_ = nullptr;
   std::size_t n_ = 0;
   std::size_t align_ = 0;
-  std::size_t generation_ = 0;
-  std::size_t active_ = 0;
-  bool stop_ = false;
+  std::atomic<std::size_t> generation_{0};
+  std::atomic<std::size_t> active_{0};
+  std::atomic<bool> stop_{false};
   std::mutex mtx_;
   std::condition_variable work_cv_;
   std::condition_variable done_cv_;

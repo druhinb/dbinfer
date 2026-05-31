@@ -11,6 +11,23 @@ namespace dbinfer::tensor {
 
 namespace {
 
+// one hint to the core that we are in a wait loop. keeps the worker hot for the
+// microseconds between two decode barriers without holding a real lock.
+inline void cpu_relax() {
+#if defined(__aarch64__) || defined(__arm__)
+  asm volatile("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+  asm volatile("pause" ::: "memory");
+#else
+  std::this_thread::yield();
+#endif
+}
+
+// spin budget before parking. sized to cover the gap between the ~8 matvec
+// barriers of one decode layer (single-digit microseconds each) while still
+// parking a pool left idle between forward passes. tune via BENCH.log.
+constexpr int kSpinBudget = 8192;
+
 std::pair<std::size_t, std::size_t> split(std::size_t idx, std::size_t count, std::size_t n,
                                           std::size_t align) {
   const std::size_t blocks = (n + align - 1) / align;
@@ -55,36 +72,41 @@ ThreadPool::ThreadPool(std::size_t thread_count) : count_(thread_count == 0 ? 1 
 ThreadPool::~ThreadPool() {
   {
     std::lock_guard lk(mtx_);
-    stop_ = true;
+    stop_.store(true, std::memory_order_release);
   }
   work_cv_.notify_all();
+}
+
+// blocks until generation_ advances past seen (or stop_), spinning first so a
+// worker catches the next barrier without a syscall, then parking on work_cv_.
+std::size_t ThreadPool::wait_for_work(std::size_t seen) {
+  for (int spins = 0; spins < kSpinBudget; ++spins) {
+    const std::size_t g = generation_.load(std::memory_order_acquire);
+    if (g != seen || stop_.load(std::memory_order_acquire))
+      return g;
+    cpu_relax();
+  }
+  std::unique_lock lk(mtx_);
+  work_cv_.wait(lk, [&] {
+    return stop_.load(std::memory_order_acquire) ||
+           generation_.load(std::memory_order_acquire) != seen;
+  });
+  return generation_.load(std::memory_order_acquire);
 }
 
 void ThreadPool::worker_loop(std::size_t idx) {
   std::size_t seen = 0;
   while (true) {
-    TaskFn fn = nullptr;
-    void *ctx = nullptr;
-    std::size_t n = 0;
-    std::size_t align = 0;
-    std::size_t count = 0;
-    {
-      std::unique_lock lk(mtx_);
-      work_cv_.wait(lk, [&] { return stop_ || generation_ != seen; });
-      if (stop_)
-        return;
-      seen = generation_;
-      fn = fn_;
-      ctx = ctx_;
-      n = n_;
-      align = align_;
-      count = count_;
-    }
-    run_range(idx, count, fn, ctx, n, align);
-    {
+    seen = wait_for_work(seen);
+    if (stop_.load(std::memory_order_acquire))
+      return;
+    // published under the caller's lock before the generation_ release above.
+    run_range(idx, count_, fn_, ctx_, n_, align_);
+    if (active_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      // last worker out: wake a caller that has parked on done_cv_. taking the
+      // lock here serializes against the caller's park so the wake is not lost.
       std::lock_guard lk(mtx_);
-      if (--active_ == 0)
-        done_cv_.notify_one();
+      done_cv_.notify_one();
     }
   }
 }
@@ -97,20 +119,26 @@ void ThreadPool::parallel_for(std::size_t n, std::size_t align, void *ctx, TaskF
     return;
   }
   {
+    // publish the task under the lock so a worker mid-park either sees the new
+    // generation before waiting or is woken by the notify below.
     std::lock_guard lk(mtx_);
     fn_ = fn;
     ctx_ = ctx;
     n_ = n;
     align_ = align;
-    active_ = workers_.size();
-    ++generation_;
+    active_.store(workers_.size(), std::memory_order_relaxed);
+    generation_.fetch_add(1, std::memory_order_release);
   }
   work_cv_.notify_all();
   run_range(0, count_, fn, ctx, n, align);
-  {
-    std::unique_lock lk(mtx_);
-    done_cv_.wait(lk, [&] { return active_ == 0; });
+  // join: spin on the worker count before parking, matching the worker side.
+  for (int spins = 0; spins < kSpinBudget; ++spins) {
+    if (active_.load(std::memory_order_acquire) == 0)
+      return;
+    cpu_relax();
   }
+  std::unique_lock lk(mtx_);
+  done_cv_.wait(lk, [&] { return active_.load(std::memory_order_acquire) == 0; });
 }
 
 ThreadPool &thread_pool() {
