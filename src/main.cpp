@@ -184,9 +184,10 @@ int main(int argc, char **argv) {
   if (opts.threads > 0)
     dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
 
-  if (opts.kv_window > 0)
-    model.configure_kv({static_cast<std::size_t>(opts.kv_sink),
-                        static_cast<std::size_t>(opts.kv_window), dbinfer::model::KvDtype::F32});
+  if (opts.kv_window > 0 || opts.kv_int8)
+    model.configure_kv(
+        {static_cast<std::size_t>(opts.kv_sink), static_cast<std::size_t>(opts.kv_window),
+         opts.kv_int8 ? dbinfer::model::KvDtype::Int8 : dbinfer::model::KvDtype::F32});
 
   if (!opts.perplexity_path.empty())
     return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)

@@ -165,3 +165,25 @@ stuck near 90-118. four pinned sinks hold it flat at 14-22, tracking the dense
 full-context range. sinks are the whole difference; without them the ring is
 unusable. --ppl-stream requires --kv-window > 0 (the dense cache would run pos
 past context_length). default decode, parity, and dense perplexity unchanged.
+
+### int8 KV (--kv-int8), dense, WikiText-2 16 chunks
+
+  ./build/release/engine -m qwen2.5-0.5b.gguf --perplexity wiki.test.raw \
+    --ppl-chunks 16 [--kv-int8] [--kv-sink N]
+
+  fp32 KV                                       17.699375
+  int8 KV, per-head absmax scale                18.854920   +6.53%
+  int8 KV, per-block(32) scale                  18.275141   +3.25%
+  int8 KV, per-channel K, no fp32 sink          17.715029   +0.089%
+  int8 KV, per-channel K + 4 fp32 sinks         17.710983   +0.066%
+
+per-token quant (per-head or per-block-32) loses 3-6% because one spiking K
+channel inflates the scale for its whole slice, crushing the rest. K outliers
+are channel-consistent (KIVI), so a scale per head_dim channel, shared across a
+32-token group and requantized from a small fp32 residual as the group fills,
+cuts the loss to 0.089% on its own. pinning the first 4 tokens (BOS and the
+attention sinks, the outlier tokens) in fp32 trims it to 0.066%. values stay
+per-block(32) per-token. both configs meet the 0.5% budget; the shipped default
+is per-channel K + 4 fp32 sinks (--kv-sink 4). --kv-int8 stays opt-in and the
+fp32 dense cache is the default, byte-for-byte unchanged (PPL 17.699375 here
+matches the pre-change run and matvec_determinism_test stays bitwise).

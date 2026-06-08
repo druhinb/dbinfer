@@ -196,6 +196,11 @@ constexpr FlagSpec kFlags[] = {
        o.ppl_stream = true;
        return {};
      }},
+    {"--kv-int8", "", false,
+     [](CliOptions &o, std::string_view, const char *) -> std::expected<void, sample::Error> {
+       o.kv_int8 = true;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -270,6 +275,7 @@ std::string usage(const char *argv0) {
   s += "  --ppl-stream            stream one continuous context, bucket by position\n";
   s += "  --kv-window <int>       ring-buffer window, 0 = dense cache (default 0)\n";
   s += "  --kv-sink <int>         pinned attention sink positions (default 4)\n";
+  s += "  --kv-int8               store keys per-channel and values per-block as int8\n";
   return s;
 }
 
