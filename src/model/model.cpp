@@ -4,10 +4,15 @@
 #include "tensor/matmul.hpp"
 #include "tensor/ops.hpp"
 #include "tensor/thread_pool.hpp"
+#include "try.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace dbinfer::model {
@@ -95,7 +100,8 @@ bool is_weight_type(GgmlType type) {
 
 KVCache::KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_heads,
                  std::size_t head_dim, KvPolicy policy)
-    : policy_(policy), capacity_(policy.window > 0 ? policy.n_sink + policy.window : max_seq),
+    : policy_(policy), n_layers_(n_layers),
+      capacity_(policy.window > 0 ? policy.n_sink + policy.window : max_seq),
       layer_stride_(capacity_ * n_kv_heads * head_dim), pos_stride_(n_kv_heads * head_dim),
       n_kv_heads_(n_kv_heads), head_dim_(head_dim), n_blocks_((head_dim + kKvBlock - 1) / kKvBlock),
       scale_stride_(capacity_ * n_kv_heads * n_blocks_) {
@@ -288,6 +294,25 @@ const float *KVCache::key_sink(std::size_t layer, std::size_t slot, std::size_t 
 
 const float *KVCache::value_sink(std::size_t layer, std::size_t slot, std::size_t kv_head) const {
   return v_sink_.data() + layer * n_sink_ * pos_stride_ + slot * pos_stride_ + kv_head * head_dim_;
+}
+
+void KVCache::copy_prefix_out(std::size_t prefix_len, float *k_out, float *v_out) const {
+  const std::size_t span = prefix_len * pos_stride_;
+  for (std::size_t l = 0; l < n_layers_; ++l) {
+    const float *ks = k_.data() + l * layer_stride_;
+    const float *vs = v_.data() + l * layer_stride_;
+    std::copy(ks, ks + span, k_out + l * span);
+    std::copy(vs, vs + span, v_out + l * span);
+  }
+}
+
+void KVCache::copy_prefix_in(std::size_t prefix_len, const float *k_in, const float *v_in) {
+  const std::size_t span = prefix_len * pos_stride_;
+  for (std::size_t l = 0; l < n_layers_; ++l) {
+    std::copy(k_in + l * span, k_in + (l + 1) * span, k_.data() + l * layer_stride_);
+    std::copy(v_in + l * span, v_in + (l + 1) * span, v_.data() + l * layer_stride_);
+  }
+  n_seen_ = prefix_len;
 }
 
 std::expected<Model, Error> Model::load(const GgufFile &file) {
@@ -726,6 +751,146 @@ const float *Model::forward(std::int32_t token, std::int32_t pos) {
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
   tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();
+}
+
+namespace {
+
+// on-disk prefix cache is little-endian fixed-width. header is magic, version,
+// (n_layers, n_kv_heads, head_dim, prefix_len), then prefix_len int32 token
+// ids, then prefix_elems fp32 keys followed by the same count of values.
+constexpr std::array<std::byte, 8> kKvMagic{std::byte{'D'}, std::byte{'B'}, std::byte{'K'},
+                                            std::byte{'V'}, std::byte{'C'}, std::byte{'A'},
+                                            std::byte{'C'}, std::byte{'H'}};
+constexpr std::uint32_t kKvVersion = 1;
+
+template <typename T> void put_scalar(std::vector<std::byte> &buf, const T &v) {
+  const std::size_t off = buf.size();
+  buf.resize(off + sizeof(T));
+  std::memcpy(buf.data() + off, &v, sizeof(T));
+}
+
+struct ByteReader {
+  const std::byte *base;
+  std::size_t size;
+  std::size_t pos = 0;
+
+  template <typename T> std::expected<T, Error> scalar() {
+    if (pos + sizeof(T) > size)
+      return std::unexpected(Error{"kv prefix cache truncated", "", pos});
+    T v;
+    std::memcpy(&v, base + pos, sizeof(T));
+    pos += sizeof(T);
+    return v;
+  }
+};
+
+std::expected<std::vector<std::byte>, Error> read_whole_file(const std::string &path) {
+  std::FILE *f = std::fopen(path.c_str(), "rb");
+  if (f == nullptr)
+    return std::unexpected(Error{"cannot open kv prefix cache " + path, path, 0});
+  std::vector<std::byte> data;
+  std::byte buf[65536];
+  std::size_t got = 0;
+  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0)
+    data.insert(data.end(), buf, buf + got);
+  const bool ok = std::ferror(f) == 0;
+  std::fclose(f);
+  if (!ok)
+    return std::unexpected(Error{"read error on kv prefix cache " + path, path, 0});
+  return data;
+}
+
+} // namespace
+
+std::expected<void, Error>
+Model::save_kv_prefix(const std::string &path, std::span<const std::int32_t> prefix_tokens) const {
+  if (!kv_.dense_f32())
+    return std::unexpected(Error{"kv prefix cache supports only the dense fp32 cache", path, 0});
+  const std::size_t prefix_len = prefix_tokens.size();
+  if (prefix_len == 0)
+    return std::unexpected(Error{"kv prefix is empty", path, 0});
+  if (kv_.n_seen() < prefix_len)
+    return std::unexpected(Error{"cache holds fewer positions than the prefix", path, 0});
+
+  std::vector<std::byte> buf;
+  for (std::byte b : kKvMagic)
+    put_scalar(buf, b);
+  put_scalar(buf, kKvVersion);
+  put_scalar(buf, static_cast<std::uint32_t>(cfg_.n_layers));
+  put_scalar(buf, static_cast<std::uint32_t>(cfg_.n_kv_heads));
+  put_scalar(buf, static_cast<std::uint32_t>(cfg_.head_dim));
+  put_scalar(buf, static_cast<std::uint32_t>(prefix_len));
+  for (std::int32_t t : prefix_tokens)
+    put_scalar(buf, t);
+
+  const std::size_t elems = kv_.prefix_elems(prefix_len);
+  std::vector<float> kbuf(elems);
+  std::vector<float> vbuf(elems);
+  kv_.copy_prefix_out(prefix_len, kbuf.data(), vbuf.data());
+  const std::size_t off = buf.size();
+  buf.resize(off + 2 * elems * sizeof(float));
+  std::memcpy(buf.data() + off, kbuf.data(), elems * sizeof(float));
+  std::memcpy(buf.data() + off + elems * sizeof(float), vbuf.data(), elems * sizeof(float));
+
+  std::FILE *f = std::fopen(path.c_str(), "wb");
+  if (f == nullptr)
+    return std::unexpected(Error{"cannot open kv prefix cache for writing " + path, path, 0});
+  const std::size_t wrote = std::fwrite(buf.data(), 1, buf.size(), f);
+  const bool ok = wrote == buf.size() && std::ferror(f) == 0;
+  std::fclose(f);
+  if (!ok)
+    return std::unexpected(Error{"write error on kv prefix cache " + path, path, 0});
+  return {};
+}
+
+std::expected<std::size_t, Error>
+Model::load_kv_prefix(const std::string &path, std::span<const std::int32_t> prefix_tokens) {
+  if (!kv_.dense_f32())
+    return std::unexpected(Error{"kv prefix cache supports only the dense fp32 cache", path, 0});
+
+  std::vector<std::byte> data = TRY(read_whole_file(path));
+  ByteReader r{data.data(), data.size()};
+
+  for (std::byte want : kKvMagic) {
+    const std::byte got = TRY(r.scalar<std::byte>());
+    if (got != want)
+      return std::unexpected(Error{"kv prefix cache bad magic", path, 0});
+  }
+  const std::uint32_t version = TRY(r.scalar<std::uint32_t>());
+  if (version != kKvVersion)
+    return std::unexpected(
+        Error{"kv prefix cache version " + std::to_string(version) + " unsupported", path, 0});
+
+  const std::uint32_t n_layers = TRY(r.scalar<std::uint32_t>());
+  const std::uint32_t n_kv_heads = TRY(r.scalar<std::uint32_t>());
+  const std::uint32_t head_dim = TRY(r.scalar<std::uint32_t>());
+  const std::uint32_t prefix_len = TRY(r.scalar<std::uint32_t>());
+  if (n_layers != cfg_.n_layers || n_kv_heads != cfg_.n_kv_heads || head_dim != cfg_.head_dim)
+    return std::unexpected(Error{"kv prefix cache hyperparams do not match this model", path, 0});
+  if (prefix_len == 0)
+    return std::unexpected(Error{"kv prefix cache has a zero-length prefix", path, 0});
+  if (prefix_len > prefix_tokens.size())
+    return std::unexpected(Error{"kv prefix is longer than the prompt", path, 0});
+  if (prefix_len > kv_.capacity())
+    return std::unexpected(Error{"kv prefix exceeds cache capacity", path, 0});
+
+  for (std::uint32_t i = 0; i < prefix_len; ++i) {
+    const std::int32_t saved = TRY(r.scalar<std::int32_t>());
+    if (saved != prefix_tokens[i])
+      return std::unexpected(
+          Error{"prompt prefix differs from saved cache at token " + std::to_string(i), path, 0});
+  }
+
+  const std::size_t elems = kv_.prefix_elems(prefix_len);
+  if (r.pos + 2 * elems * sizeof(float) != data.size())
+    return std::unexpected(Error{"kv prefix cache payload size mismatch", path, 0});
+
+  std::vector<float> kbuf(elems);
+  std::vector<float> vbuf(elems);
+  std::memcpy(kbuf.data(), data.data() + r.pos, elems * sizeof(float));
+  std::memcpy(vbuf.data(), data.data() + r.pos + elems * sizeof(float), elems * sizeof(float));
+  kv_.copy_prefix_in(prefix_len, kbuf.data(), vbuf.data());
+  return static_cast<std::size_t>(prefix_len);
 }
 
 } // namespace dbinfer::model

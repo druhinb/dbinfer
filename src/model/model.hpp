@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace dbinfer::model {
@@ -107,6 +109,20 @@ public:
   bool k_per_channel() const { return k_group_ > 0; }
   bool int8() const { return policy_.dtype == KvDtype::Int8; }
   bool ring() const { return policy_.window > 0; }
+  // full-context fp32 path, the only one the prefix cache serializes.
+  bool dense_f32() const { return !int8() && !ring(); }
+  std::size_t n_layers() const { return n_layers_; }
+  // fp32 elements per K (and per V) covering positions [0, prefix_len) of
+  // every layer. dense fp32 only.
+  std::size_t prefix_elems(std::size_t prefix_len) const {
+    return n_layers_ * prefix_len * pos_stride_;
+  }
+  // packs positions [0, prefix_len) of every layer into k_out and v_out,
+  // prefix_elems() floats each. dense fp32 only, caller bounds-checks.
+  void copy_prefix_out(std::size_t prefix_len, float *k_out, float *v_out) const;
+  // restores positions [0, prefix_len) of every layer from k_in and v_in and
+  // sets n_seen to prefix_len. dense fp32 only, caller bounds-checks.
+  void copy_prefix_in(std::size_t prefix_len, const float *k_in, const float *v_in);
   std::size_t capacity() const { return capacity_; }
   std::size_t n_seen() const { return n_seen_; }
   const KvPolicy &policy() const { return policy_; }
@@ -128,6 +144,7 @@ private:
   void requantize_kgroup(std::size_t layer, std::size_t g, std::size_t within);
 
   KvPolicy policy_;
+  std::size_t n_layers_;
   std::size_t capacity_;
   std::size_t layer_stride_;
   std::size_t pos_stride_;
@@ -196,6 +213,18 @@ public:
 
   // clears the resident count so the next token starts a fresh stream.
   void reset_kv() { kv_.reset(); }
+
+  // serializes the dense fp32 KV cache prefix [0, prefix_tokens.size()) plus
+  // the prefix token ids to path. requires the default dense fp32 policy and
+  // that prefill has filled at least that many positions.
+  [[nodiscard]] std::expected<void, gguf::Error>
+  save_kv_prefix(const std::string &path, std::span<const std::int32_t> prefix_tokens) const;
+
+  // validates a prefix cache header against this model and prefix_tokens
+  // against the saved ids, restores K/V, sets the cache position to the saved
+  // prefix length, and returns it. leaves the cache untouched on any mismatch.
+  [[nodiscard]] std::expected<std::size_t, gguf::Error>
+  load_kv_prefix(const std::string &path, std::span<const std::int32_t> prefix_tokens);
 
 private:
   Config cfg_;

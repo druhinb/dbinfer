@@ -77,6 +77,12 @@ if(EXISTS "${TEST_GGUF}")
   target_compile_definitions(tokenizer_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
   add_test(NAME tokenizer_test COMMAND tokenizer_test)
 
+  add_executable(kv_prefix_cache_test kv_prefix_cache_test.cpp)
+  target_include_directories(kv_prefix_cache_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(kv_prefix_cache_test PRIVATE dbinfer_model)
+  target_compile_definitions(kv_prefix_cache_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
+  add_test(NAME kv_prefix_cache_test COMMAND kv_prefix_cache_test)
+
   if(EXISTS "${GOLDEN_MANIFEST}")
     add_executable(model_test model_test.cpp)
     target_include_directories(model_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

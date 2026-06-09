@@ -201,6 +201,16 @@ constexpr FlagSpec kFlags[] = {
        o.kv_int8 = true;
        return {};
      }},
+    {"--kv-cache-save", "", true,
+     [](CliOptions &o, std::string_view, const char *v) -> std::expected<void, sample::Error> {
+       o.kv_cache_save = v;
+       return {};
+     }},
+    {"--kv-cache-load", "", true,
+     [](CliOptions &o, std::string_view, const char *v) -> std::expected<void, sample::Error> {
+       o.kv_cache_load = v;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -246,6 +256,14 @@ std::expected<CliOptions, sample::Error> parse_args(int argc, const char *const 
   if (opts.ppl_stream && opts.kv_window <= 0)
     return std::unexpected(sample::Error{"--ppl-stream requires --kv-window > 0"});
 
+  const bool kv_cache_io = !opts.kv_cache_save.empty() || !opts.kv_cache_load.empty();
+  if (kv_cache_io && (opts.kv_window > 0 || opts.kv_int8))
+    return std::unexpected(
+        sample::Error{"--kv-cache-save/--kv-cache-load require the dense fp32 cache"});
+  if (kv_cache_io && !opts.perplexity_path.empty())
+    return std::unexpected(
+        sample::Error{"--kv-cache-save/--kv-cache-load do not apply to perplexity"});
+
   if (auto ok = sample::validate(opts.params); !ok)
     return std::unexpected(ok.error());
 
@@ -276,6 +294,8 @@ std::string usage(const char *argv0) {
   s += "  --kv-window <int>       ring-buffer window, 0 = dense cache (default 0)\n";
   s += "  --kv-sink <int>         pinned attention sink positions (default 4)\n";
   s += "  --kv-int8               store keys per-channel and values per-block as int8\n";
+  s += "  --kv-cache-save <path>  dump the dense fp32 prefix cache after prefill\n";
+  s += "  --kv-cache-load <path>  load a prefix cache and continue from it\n";
   return s;
 }
 

@@ -12,6 +12,8 @@ struct CliOptions {
   std::string model_path;
   std::string prompt;
   std::string perplexity_path; // non-empty selects perplexity mode
+  std::string kv_cache_save;   // non-empty dumps the prefix cache after prefill
+  std::string kv_cache_load;   // non-empty loads a prefix cache before prefill
   int ppl_chunks = 0;          // 0 means all windows
   int n = 128;
   int threads = 0; // 0 means auto (P-core count)
