@@ -207,6 +207,18 @@ public:
   // cache slots it reuses.
   const float *forward(std::int32_t token, std::int32_t pos);
 
+  // runs n tokens at positions [pos0, pos0 + n) through the whole stack together,
+  // appending each to this model's KV cache and writing n * vocab_size logits to
+  // out (row per token). attention masks causally within the chunk and against
+  // the existing cache. requires the dense fp32 cache and strictly increasing
+  // pos0 across calls, matching per-token forward(). every logit is bitwise
+  // identical to forward() run one token at a time over the same positions.
+  void forward_chunk(const std::int32_t *tokens, std::int32_t pos0, std::size_t n, float *out);
+
+  // true when the KV cache is the default full-context fp32 layout, the only one
+  // forward_chunk supports.
+  bool kv_dense_f32() const { return kv_.dense_f32(); }
+
   // rebuilds the KV cache under policy and resizes the score/resident scratch.
   // window > 0 selects the ring path; window == 0 restores the dense default.
   void configure_kv(KvPolicy policy);
@@ -227,6 +239,25 @@ public:
   load_kv_prefix(const std::string &path, std::span<const std::int32_t> prefix_tokens);
 
 private:
+  // per-chunk activation buffers, sized for n tokens once per forward_chunk.
+  struct ChunkScratch {
+    std::vector<float> x;
+    std::vector<float> normed;
+    std::vector<float> q;
+    std::vector<float> k;
+    std::vector<float> v;
+    std::vector<float> attn;
+    std::vector<float> proj;
+    std::vector<float> gate;
+    std::vector<float> up;
+    std::vector<float> down;
+  };
+
+  // runs one transformer block over the whole chunk, mirroring decode_layer per
+  // token. x holds n residual rows of embedding_length, updated in place.
+  void decode_layer_chunk(std::size_t layer, float *x, std::int32_t pos0, std::size_t n,
+                          ChunkScratch &s, KVCache &kv);
+
   Config cfg_;
   std::vector<LayerWeights> layers_;
   tensor::QuantMatrix token_embd_{};

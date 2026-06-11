@@ -15,6 +15,7 @@ struct CliOptions {
   std::string kv_cache_save;   // non-empty dumps the prefix cache after prefill
   std::string kv_cache_load;   // non-empty loads a prefix cache before prefill
   int ppl_chunks = 0;          // 0 means all windows
+  int prefill_chunk = 1;       // >1 prefills the prompt in fixed-size chunks
   int n = 128;
   int threads = 0; // 0 means auto (P-core count)
   int kv_sink = 4;

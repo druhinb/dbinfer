@@ -83,6 +83,12 @@ if(EXISTS "${TEST_GGUF}")
   target_compile_definitions(kv_prefix_cache_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
   add_test(NAME kv_prefix_cache_test COMMAND kv_prefix_cache_test)
 
+  add_executable(chunked_prefill_test chunked_prefill_test.cpp)
+  target_include_directories(chunked_prefill_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(chunked_prefill_test PRIVATE dbinfer_model)
+  target_compile_definitions(chunked_prefill_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
+  add_test(NAME chunked_prefill_test COMMAND chunked_prefill_test)
+
   if(EXISTS "${GOLDEN_MANIFEST}")
     add_executable(model_test model_test.cpp)
     target_include_directories(model_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

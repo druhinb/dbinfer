@@ -753,6 +753,115 @@ const float *Model::forward(std::int32_t token, std::int32_t pos) {
   return logits_.data();
 }
 
+void Model::decode_layer_chunk(std::size_t layer, float *x, std::int32_t pos0, std::size_t n,
+                               ChunkScratch &s, KVCache &kv) {
+  const LayerWeights &L = layers_[layer];
+  const std::size_t dim = cfg_.embedding_length;
+  const std::size_t hd = cfg_.head_dim;
+  const std::size_t nh = cfg_.n_heads;
+  const std::size_t nkv = cfg_.n_kv_heads;
+  const std::size_t gqa = cfg_.gqa_factor;
+
+  tensor::rmsnorm(x, L.attn_norm, cfg_.rms_eps, s.normed.data(), n, dim);
+  tensor::matmul_quant(L.attn_q, s.normed.data(), s.q.data(), n, nh * hd, dim);
+  tensor::matmul_quant(L.attn_k, s.normed.data(), s.k.data(), n, nkv * hd, dim);
+  tensor::matmul_quant(L.attn_v, s.normed.data(), s.v.data(), n, nkv * hd, dim);
+
+  // bias, rope, and append every position before any query attends, so each
+  // token still reads only its own causal prefix within the chunk.
+  for (std::size_t c = 0; c < n; ++c) {
+    float *qc = s.q.data() + c * nh * hd;
+    float *kc = s.k.data() + c * nkv * hd;
+    float *vc = s.v.data() + c * nkv * hd;
+    if (L.attn_q_bias)
+      for (std::size_t i = 0; i < nh * hd; ++i)
+        qc[i] += L.attn_q_bias[i];
+    if (L.attn_k_bias)
+      for (std::size_t i = 0; i < nkv * hd; ++i)
+        kc[i] += L.attn_k_bias[i];
+    if (L.attn_v_bias)
+      for (std::size_t i = 0; i < nkv * hd; ++i)
+        vc[i] += L.attn_v_bias[i];
+    const std::int32_t p = pos0 + static_cast<std::int32_t>(c);
+    tensor::rope(qc, &p, cfg_.rope_theta, nh, 1, hd);
+    tensor::rope(kc, &p, cfg_.rope_theta, nkv, 1, hd);
+    kv.append(layer, static_cast<std::size_t>(p), kc, vc);
+  }
+
+  const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+  const std::size_t last = static_cast<std::size_t>(pos0) + n - 1;
+  tensor::parallel_for(tensor::thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
+    std::vector<float> sc(last + 1, 0.0f);
+    for (std::size_t h = hbegin; h < hend; ++h) {
+      const std::size_t kh = h / gqa;
+      for (std::size_t c = 0; c < n; ++c) {
+        const std::size_t pos_c = static_cast<std::size_t>(pos0) + c;
+        const float *qh = s.q.data() + c * nh * hd + h * hd;
+        for (std::size_t pp = 0; pp <= pos_c; ++pp) {
+          const float *kp = kv.key(layer, pp, kh);
+          float dot = 0.0f;
+          for (std::size_t i = 0; i < hd; ++i)
+            dot += qh[i] * kp[i];
+          sc[pp] = dot * scale;
+        }
+        tensor::softmax(sc.data(), sc.data(), pos_c + 1);
+        float *outh = s.attn.data() + c * nh * hd + h * hd;
+        for (std::size_t i = 0; i < hd; ++i)
+          outh[i] = 0.0f;
+        for (std::size_t pp = 0; pp <= pos_c; ++pp) {
+          const float *vp = kv.value(layer, pp, kh);
+          const float w = sc[pp];
+          for (std::size_t i = 0; i < hd; ++i)
+            outh[i] += w * vp[i];
+        }
+      }
+    }
+  });
+
+  tensor::matmul_quant(L.attn_output, s.attn.data(), s.proj.data(), n, dim, nh * hd);
+  for (std::size_t i = 0; i < n * dim; ++i)
+    x[i] += s.proj[i];
+
+  const std::size_t ff = cfg_.ffn_length;
+  tensor::rmsnorm(x, L.ffn_norm, cfg_.rms_eps, s.normed.data(), n, dim);
+  tensor::matmul_quant(L.ffn_gate, s.normed.data(), s.gate.data(), n, ff, dim);
+  tensor::matmul_quant(L.ffn_up, s.normed.data(), s.up.data(), n, ff, dim);
+  tensor::silu(s.gate.data(), s.gate.data(), n * ff);
+  for (std::size_t i = 0; i < n * ff; ++i)
+    s.gate[i] *= s.up[i];
+  tensor::matmul_quant(L.ffn_down, s.gate.data(), s.down.data(), n, dim, ff);
+  for (std::size_t i = 0; i < n * dim; ++i)
+    x[i] += s.down[i];
+}
+
+void Model::forward_chunk(const std::int32_t *tokens, std::int32_t pos0, std::size_t n,
+                          float *out) {
+  const std::size_t dim = cfg_.embedding_length;
+  const std::size_t hd = cfg_.head_dim;
+  const std::size_t nh = cfg_.n_heads;
+  const std::size_t nkv = cfg_.n_kv_heads;
+  const std::size_t ff = cfg_.ffn_length;
+
+  ChunkScratch s;
+  s.x.assign(n * dim, 0.0f);
+  s.normed.assign(n * dim, 0.0f);
+  s.q.assign(n * nh * hd, 0.0f);
+  s.k.assign(n * nkv * hd, 0.0f);
+  s.v.assign(n * nkv * hd, 0.0f);
+  s.attn.assign(n * nh * hd, 0.0f);
+  s.proj.assign(n * dim, 0.0f);
+  s.gate.assign(n * ff, 0.0f);
+  s.up.assign(n * ff, 0.0f);
+  s.down.assign(n * dim, 0.0f);
+
+  for (std::size_t c = 0; c < n; ++c)
+    embed(tokens[c], s.x.data() + c * dim);
+  for (std::size_t l = 0; l < cfg_.n_layers; ++l)
+    decode_layer_chunk(l, s.x.data(), pos0, n, s, kv_);
+  tensor::rmsnorm(s.x.data(), output_norm_, cfg_.rms_eps, s.normed.data(), n, dim);
+  tensor::matmul_quant(lm_head_, s.normed.data(), out, n, cfg_.vocab_size, dim);
+}
+
 namespace {
 
 // on-disk prefix cache is little-endian fixed-width. header is magic, version,
