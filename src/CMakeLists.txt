@@ -43,11 +43,15 @@ add_library(dbinfer_sample STATIC
   sample/sample.cpp)
 target_include_directories(dbinfer_sample PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_library(dbinfer_grammar STATIC
+  grammar/grammar.cpp)
+target_include_directories(dbinfer_grammar PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_library(dbinfer_args STATIC
   args.cpp)
 target_include_directories(dbinfer_args PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dbinfer_args PUBLIC dbinfer_sample)
 
 add_executable(engine main.cpp)
-target_link_libraries(engine PRIVATE dbinfer_model dbinfer_args)
+target_link_libraries(engine PRIVATE dbinfer_model dbinfer_args dbinfer_grammar)
 set_target_properties(engine PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
