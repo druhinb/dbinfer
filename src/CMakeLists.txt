@@ -35,7 +35,8 @@ target_include_directories(dbinfer_tokenizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dbinfer_tokenizer PUBLIC dbinfer_gguf)
 
 add_library(dbinfer_model STATIC
-  model/model.cpp)
+  model/model.cpp
+  model/speculative.cpp)
 target_include_directories(dbinfer_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dbinfer_model PUBLIC dbinfer_gguf dbinfer_tensor dbinfer_tokenizer)
 
