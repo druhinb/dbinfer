@@ -229,6 +229,19 @@ constexpr FlagSpec kFlags[] = {
        o.grammar_stop = true;
        return {};
      }},
+    {"--draft-model", "", true,
+     [](CliOptions &o, std::string_view, const char *v) -> std::expected<void, sample::Error> {
+       o.draft_model = v;
+       return {};
+     }},
+    {"--draft-k", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x <= 0)
+         return std::unexpected(must_be(f, v, "must be > 0"));
+       o.draft_k = x;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -282,6 +295,20 @@ std::expected<CliOptions, sample::Error> parse_args(int argc, const char *const 
     return std::unexpected(
         sample::Error{"--kv-cache-save/--kv-cache-load do not apply to perplexity"});
 
+  if (!opts.draft_model.empty()) {
+    if (!opts.perplexity_path.empty())
+      return std::unexpected(sample::Error{"--draft-model does not apply to perplexity"});
+    if (!opts.grammar_path.empty())
+      return std::unexpected(sample::Error{"--draft-model does not support --grammar"});
+    if (opts.kv_window > 0 || opts.kv_int8 || kv_cache_io)
+      return std::unexpected(sample::Error{"--draft-model requires the dense fp32 cache"});
+    if (opts.params.temperature != 0.0f)
+      return std::unexpected(sample::Error{"--draft-model is greedy only (temp 0)"});
+    if (opts.params.repeat_penalty != 1.0f || opts.params.freq_penalty != 0.0f ||
+        opts.params.presence_penalty != 0.0f)
+      return std::unexpected(sample::Error{"--draft-model does not support sampling penalties"});
+  }
+
   if (auto ok = sample::validate(opts.params); !ok)
     return std::unexpected(ok.error());
 
@@ -317,6 +344,8 @@ std::string usage(const char *argv0) {
   s += "  --prefill-chunk <int>   prefill tokens per chunk, 1 = per token (default 1)\n";
   s += "  --grammar <path>        constrain decoding to a GBNF grammar file\n";
   s += "  --grammar-stop          stop when the grammar first reaches a complete state\n";
+  s += "  --draft-model <path>    draft GGUF for greedy speculative decoding\n";
+  s += "  --draft-k <int>         draft tokens proposed per verify round (default 4)\n";
   return s;
 }
 
