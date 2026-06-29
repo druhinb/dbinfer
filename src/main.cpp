@@ -1,4 +1,5 @@
 #include "args.hpp"
+#include "dbmf/dbmf.hpp"
 #include "gguf/gguf.hpp"
 #include "grammar/grammar.hpp"
 #include "model/model.hpp"
@@ -12,12 +13,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace {
+
+// DBMF_VERIFY=1 recomputes every tensor's xxhash64 at load. off by default so
+// the mmap-direct path stays fast.
+dbinfer::dbmf::ReadOptions read_opts() {
+  const char *v = std::getenv("DBMF_VERIFY");
+  return {v != nullptr && v[0] == '1'};
+}
 
 std::optional<std::string> read_file(const char *path) {
   std::FILE *f = std::fopen(path, "rb");
@@ -159,9 +168,9 @@ int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer
 // prints the generated tokens, and logs the acceptance rate to stderr.
 int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tokenizer &tok,
                     const dbinfer::cli::CliOptions &opts) {
-  auto dloaded = dbinfer::gguf::load(opts.draft_model);
+  auto dloaded = dbinfer::dbmf::load_model(opts.draft_model, read_opts());
   if (!dloaded) {
-    std::fprintf(stderr, "error: load draft gguf: %s\n",
+    std::fprintf(stderr, "error: load draft model: %s\n",
                  dbinfer::gguf::to_string(dloaded.error()).c_str());
     return 1;
   }
@@ -226,9 +235,9 @@ int main(int argc, char **argv) {
   }
   const dbinfer::cli::CliOptions &opts = *parsed;
 
-  auto loaded = dbinfer::gguf::load(opts.model_path);
+  auto loaded = dbinfer::dbmf::load_model(opts.model_path, read_opts());
   if (!loaded) {
-    std::fprintf(stderr, "error: load gguf: %s\n",
+    std::fprintf(stderr, "error: load model: %s\n",
                  dbinfer::gguf::to_string(loaded.error()).c_str());
     return 1;
   }

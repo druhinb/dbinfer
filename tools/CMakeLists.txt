@@ -1,6 +1,9 @@
 add_executable(gguf_dump_tool gguf_dump_tool.cpp)
 target_link_libraries(gguf_dump_tool PRIVATE dbinfer_gguf)
 
+add_executable(gguf_to_dbmf gguf_to_dbmf.cpp)
+target_link_libraries(gguf_to_dbmf PRIVATE dbinfer_dbmf)
+
 add_executable(bench bench.cpp)
 target_link_libraries(bench PRIVATE dbinfer_model)
 
