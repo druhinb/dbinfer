@@ -251,3 +251,55 @@ bit-identical to per-token decode (chunked_prefill_test, matvec_determinism_test
 and the greedy stream stays token-identical to spec-off (--print-ids diff,
 k=4 and k=8, both prompts IDENTICAL). Speedup is now above 1x because the
 verify projections are no longer weight-bandwidth-bound on the k+1 rows.
+
+## Phase 10: custom model format (dbmf)
+
+Container format for the same weights and hyperparams a gguf carries, laid out
+for this engine. Numbers from qwen2.5-0.5b, converted with tools/gguf_to_dbmf.
+
+File size (F16 model, 290 tensors):
+
+  gguf                         994156352 B   100.00%
+  dbmf raw                     995872256 B   100.17%   (+1.72 MB)
+  dbmf compressed (f16 huff)   847547904 B    85.25%   (-146.6 MB)
+
+dbmf-raw is slightly LARGER than gguf: every tensor data offset is padded to a
+16384-byte page (Apple Silicon page size) so a later Metal backend can wrap the
+mmap zero-copy via newBufferWithBytesNoCopy. The padding overhead here is
++0.17% (1.72 MB over 290 tensors), the documented cost of the alignment.
+
+Compression is DFloat11/ZipNN-inspired: each f16 splits into a low-entropy high
+byte (sign, exponent, top mantissa bits) canonical-huffman coded, and a raw low
+byte. Achieved 14.75% reduction on this model. That is materially below the
+~20% some papers report; f16 low-byte mantissa noise is near-incompressible and
+is stored raw, so the ceiling is the high-byte plane alone. Reported as-is.
+
+Load-to-first-logit (warm page cache, engine -n 1, median of 3):
+
+  gguf                 0.57 s
+  dbmf raw             0.57 s   mmap-direct, identical to gguf
+  dbmf compressed      5.18 s   decodes every f16 tensor once at load
+
+Compressed mode trades ~4.6 s of one-time decode for a 15% smaller file, a
+storage/distribution mode. Raw mode stays the mmap-direct default.
+
+Dedup: identical (dtype, size, xxhash64) tensors with byte-equal contents are
+stored once, both table entries share the offset. qwen2.5 ties its embeddings
+and the gguf already omits the lm_head, so this model has no duplicate tensor
+and dedup saves 0 B here. The mechanism is proven on a synthetic twin in
+dbmf_convert_test (tied tensor shares one data offset).
+
+Integrity: per-tensor xxhash64 in the table plus an xxhash64 of the header.
+DBMF_VERIFY=1 (or read verify=true) rechecks every tensor at load; compressed
+tensors are always verified against the stored hash after decode. A flipped
+tensor byte is reported by name (dbmf_convert_test corruption gate).
+
+Verdict vs gguf on each claimed axis:
+  - indexed access: better. fixed 128-byte table records, O(1) vs gguf's
+    sequential variable-length tensor_info parse.
+  - integrity: better. gguf carries no per-tensor checksum.
+  - Metal zero-copy readiness: better. page-aligned tensor data.
+  - load speed (raw): tie. both mmap-direct, same wall time.
+  - file size (raw): slightly worse (+0.17%), the alignment trade.
+  - file size (compressed): better (-14.75%) at a load-time decode cost.
+  - dedup: neutral on this model (nothing to dedup), mechanism present.
