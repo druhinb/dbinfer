@@ -29,7 +29,12 @@ public:
   // (mmap of a zero-length file is undefined) up front.
   static std::expected<MappedFile, Error> open(std::string_view path);
 
+  // writable anonymous mapping, for tensor bytes decoded once at load time from
+  // a compressed container. filled via data_mut() before any reader sees it.
+  static std::expected<MappedFile, Error> anonymous(std::size_t size);
+
   const std::byte *data() const { return static_cast<const std::byte *>(data_); }
+  std::byte *data_mut() { return static_cast<std::byte *>(data_); }
   std::size_t size() const { return size_; }
 
 private:

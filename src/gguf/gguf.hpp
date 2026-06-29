@@ -38,6 +38,16 @@ enum class GgmlType : std::uint32_t {
 
 const char *to_string(GgmlType type);
 
+struct TypeInfo {
+  std::uint64_t block_size = 0; // elements per stored block
+  std::uint64_t type_size = 0;  // bytes per stored block
+  bool known = false;
+};
+
+// block layout for a ggml dtype. known is false for enum values outside the
+// supported set, letting callers reject unknown types read from a file.
+TypeInfo type_info(GgmlType type);
+
 enum class MetaType : std::uint32_t {
   UInt8 = 0,
   Int8 = 1,
@@ -100,6 +110,10 @@ struct GgufFile {
   std::vector<std::pair<std::string, MetaValue>> metadata; // insertion order
   std::vector<TensorInfo> tensors;
   MappedFile mapping;
+  // decoded tensor bytes for a compressed dbmf container, empty otherwise.
+  // TensorInfo::data for a compressed tensor points in here, so it must outlive
+  // any tensor use exactly as mapping does.
+  MappedFile aux;
 
   // linear scan; metadata is small (dozens of keys) so a map is not worth it
   const MetaValue *find_meta(std::string_view key) const;
