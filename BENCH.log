@@ -303,3 +303,33 @@ Verdict vs gguf on each claimed axis:
   - file size (raw): slightly worse (+0.17%), the alignment trade.
   - file size (compressed): better (-14.75%) at a load-time decode cost.
   - dedup: neutral on this model (nothing to dedup), mechanism present.
+
+## Phase 11 slice (a) (Metal mul_mat_f16 offload)
+
+Backend seam: DBINFER_BACKEND=metal routes tensor::matmul_quant's F16 batched
+path (chunked prefill, speculative verify) to a Metal compute kernel. Per-token
+decode (matvec_quant) stays CPU. Default is CPU and stays bitwise unchanged.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Model: qwen2.5-0.5b.gguf (F16 weights).
+
+Prefill tok/s, 480-token prompt, --prefill-chunk 8. Wall clock isolates prefill
+by subtracting a 1-token run (model load + tokenize + one token), 479 prefill
+tokens:
+
+                    t(480-tok)   t(1-tok)   prefill s   prefill tok/s
+  CPU  (default)      29.11       0.57       28.54        16.8
+  Metal offload       17.53       0.69       16.84        28.4
+
+Metal is ~1.7x faster on F16 prefill at this size. The weight buffer is copied
+in per matmul here: the gguf mmap aligns tensor data to 32 bytes, below the
+16384-byte page newBufferWithBytesNoCopy needs. DBMF tensors are 16 KiB-aligned
+and wrap zero-copy (metal_matmul_test proves the wrap succeeds for an aligned
+pointer and falls back for an unaligned one); loading the model as DBMF removes
+the per-call weight copy.
+
+Per-kernel parity (metal_matmul_test): max_err 0.000e+00 across m in {1,4,7} and
+out/in in {32,896,4864}. The shader accumulates in fp32 with the same sequential
+fma order as matvec_f16, so it is bitwise identical to the CPU F16 path, well
+inside the atol 1e-4 gate. End-to-end greedy output is token-identical to CPU
+for 2 prompts (--prefill-chunk 8, --print-ids), no near-tie flips.
