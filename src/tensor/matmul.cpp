@@ -1,5 +1,6 @@
 #include "tensor/matmul.hpp"
 
+#include "backend/backend.hpp"
 #include "tensor/cpu.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul_neon.hpp"
@@ -366,7 +367,13 @@ void matmul_quant(QuantMatrix w, const float *A, float *C, std::size_t m, std::s
                   std::size_t in) {
   // f16 shares one weight read across all m rows, bit-identical to per-row.
   if (w.type == gguf::GgmlType::F16) {
-    matmul_f16_batched(reinterpret_cast<const std::uint16_t *>(w.data), A, C, m, out, in);
+    const auto *W = reinterpret_cast<const std::uint16_t *>(w.data);
+    // an offload backend (DBINFER_BACKEND=metal) takes the batched f16 matmul.
+    // nullptr or a backend error falls back to the CPU kernel with no change.
+    if (backend::Backend *b = backend::active_backend();
+        b != nullptr && b->mul_mat_f16(W, A, C, m, out, in))
+      return;
+    matmul_f16_batched(W, A, C, m, out, in);
     return;
   }
   // other dtypes keep the per-row kernel so a chunk row stays bit-identical.

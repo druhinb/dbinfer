@@ -9,6 +9,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-fno-exceptions -fno-rtti -Wall -Wextra)
 
+set(DBINFER_METAL_DEFAULT OFF)
+if(APPLE)
+  set(DBINFER_METAL_DEFAULT ON)
+endif()
+option(DBINFER_METAL "Build the Metal mul_mat backend (Apple only)" ${DBINFER_METAL_DEFAULT})
+
 option(DBINFER_SANITIZE "Enable ASan/UBSan (Debug builds)" OFF)
 option(DBINFER_TSAN "Enable ThreadSanitizer (Debug builds)" OFF)
 if(DBINFER_SANITIZE AND DBINFER_TSAN)
