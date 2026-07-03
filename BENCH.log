@@ -333,3 +333,50 @@ out/in in {32,896,4864}. The shader accumulates in fp32 with the same sequential
 fma order as matvec_f16, so it is bitwise identical to the CPU F16 path, well
 inside the atol 1e-4 gate. End-to-end greedy output is token-identical to CPU
 for 2 prompts (--prefill-chunk 8, --print-ids), no near-tie flips.
+
+## Phase 11 slice (b) (Metal rmsnorm, rope, attention, layer offload)
+
+Backend grows rmsnorm, rope, attention, and a fused per-layer decode. --gpu-layers
+N (or DBINFER_GPU_LAYERS) runs the first N blocks of the per-token forward() on
+Metal: rmsnorm, QKV/attn/ffn matmuls (mul_mat_f16, m=1), bias, rope, attention,
+and the elementwise glue, one command buffer per layer. F16 model on the dense
+fp32 cache only. N=0 is pure CPU and stays bitwise unchanged.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Model: qwen2.5-0.5b.gguf (F16 weights), 24 blocks.
+
+Per-kernel parity (metal_ops_test) vs the scalar CPU op, atol 1e-4:
+
+  op          shapes                                    max_err
+  rmsnorm     rows {1,4} x dim {32,896,4864}            2.384e-07
+  rope        nh {2,8,14} seq {1,4} hd {64,128}         4.427e-05
+  attention   nh/nkv {14/2,8/8} hd {64,128} pos 1..300  1.192e-07
+
+rmsnorm and attention sum sequentially per output, so they match the CPU
+reduction bitwise apart from softmax exp (attention max 1.2e-7, rmsnorm 2.4e-7 from
+the scalar auto-vectorized sum). rope diverges only because fp32 pow/cos/sin
+replace the double CPU transcendentals; the angle error scales with position and
+reaches ~1e-4 near pos 2048 for theta 1e6, far past any parity-prompt range.
+
+End-to-end greedy parity, --print-ids, 48 tokens, 2 prompts:
+
+  gpu-layers 24 vs 0 : token-identical (both prompts)
+  gpu-layers 12 vs 0 : token-identical (both prompts, mixed CPU/GPU)
+
+No near-tie flips; the fp32 activations and sequential reductions keep the
+offloaded stack inside the CPU logits.
+
+Decode tok/s, short prompt, 128 tokens, wall clock minus a 1-token run:
+
+  gpu-layers   decode tok/s
+  0 (CPU)         8.50
+  12              7.27
+  24              6.96
+
+The GPU per-token path loses to the threaded i8mm CPU path, as expected: m=1
+GEMV is memory-bound and tiny, and each offloaded layer pays a command-buffer
+submit plus a KV-history copy into a fresh device buffer. Per-layer batching
+avoids the per-op-sync collapse (24 syncs/token, not ~250). Beating CPU decode
+needs quant matvec on Metal (future) or fusing all offloaded layers into one
+command buffer per token; prefill (slice a) already wins at 1.7x. Numbers are
+reported as measured, not tuned.
