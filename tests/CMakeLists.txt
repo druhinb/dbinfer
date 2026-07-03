@@ -45,6 +45,10 @@ if(DBINFER_METAL)
   add_executable(metal_matmul_test metal_matmul_test.cpp)
   target_link_libraries(metal_matmul_test PRIVATE dbinfer_tensor dbinfer_backend)
   add_test(NAME metal_matmul_test COMMAND metal_matmul_test)
+
+  add_executable(metal_ops_test metal_ops_test.cpp)
+  target_link_libraries(metal_ops_test PRIVATE dbinfer_tensor dbinfer_backend)
+  add_test(NAME metal_ops_test COMMAND metal_ops_test)
 endif()
 
 add_executable(sample_test sample_test.cpp)
