@@ -20,7 +20,8 @@ struct CliOptions {
   int ppl_chunks = 0;          // 0 means all windows
   int prefill_chunk = 1;       // >1 prefills the prompt in fixed-size chunks
   int n = 128;
-  int threads = 0; // 0 means auto (P-core count)
+  int gpu_layers = -1; // <0 means read DBINFER_GPU_LAYERS, then default 0
+  int threads = 0;     // 0 means auto (P-core count)
   int kv_sink = 4;
   int kv_window = 0; // >0 selects the ring-buffer KV cache
   bool kv_int8 = false;

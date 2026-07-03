@@ -1,5 +1,6 @@
 #include "model/model.hpp"
 
+#include "backend/backend.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
 #include "tensor/ops.hpp"
@@ -743,11 +744,62 @@ void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache 
       dbg->layer_out[i] = x[i];
 }
 
+bool Model::layers_f16(std::size_t n) const {
+  const std::size_t limit = std::min(n, layers_.size());
+  for (std::size_t l = 0; l < limit; ++l) {
+    const LayerWeights &L = layers_[l];
+    const gguf::GgmlType t[] = {L.attn_q.type,   L.attn_k.type, L.attn_v.type,  L.attn_output.type,
+                                L.ffn_gate.type, L.ffn_up.type, L.ffn_down.type};
+    for (gguf::GgmlType ty : t)
+      if (ty != GgmlType::F16)
+        return false;
+  }
+  return true;
+}
+
+void Model::decode_layer_gpu(std::size_t layer, float *x, std::int32_t pos, KVCache &kv) {
+  const LayerWeights &L = layers_[layer];
+  backend::LayerF16 gl;
+  gl.attn_norm = L.attn_norm;
+  gl.ffn_norm = L.ffn_norm;
+  gl.wq = reinterpret_cast<const std::uint16_t *>(L.attn_q.data);
+  gl.wk = reinterpret_cast<const std::uint16_t *>(L.attn_k.data);
+  gl.wv = reinterpret_cast<const std::uint16_t *>(L.attn_v.data);
+  gl.wo = reinterpret_cast<const std::uint16_t *>(L.attn_output.data);
+  gl.wgate = reinterpret_cast<const std::uint16_t *>(L.ffn_gate.data);
+  gl.wup = reinterpret_cast<const std::uint16_t *>(L.ffn_up.data);
+  gl.wdown = reinterpret_cast<const std::uint16_t *>(L.ffn_down.data);
+  gl.bq = L.attn_q_bias;
+  gl.bk = L.attn_k_bias;
+  gl.bv = L.attn_v_bias;
+  gl.dim = cfg_.embedding_length;
+  gl.ff = cfg_.ffn_length;
+  gl.n_heads = cfg_.n_heads;
+  gl.n_kv_heads = cfg_.n_kv_heads;
+  gl.head_dim = cfg_.head_dim;
+  gl.rms_eps = cfg_.rms_eps;
+  gl.rope_theta = cfg_.rope_theta;
+
+  const float *k_hist = kv.key(layer, 0, 0);
+  const float *v_hist = kv.value(layer, 0, 0);
+  auto r = backend_->decode_layer(gl, x, pos, k_hist, v_hist, k_.data(), v_.data());
+  if (!r) {
+    decode_layer(layer, x, pos, kv, nullptr);
+    return;
+  }
+  kv.append(layer, static_cast<std::size_t>(pos), k_.data(), v_.data());
+}
+
 const float *Model::forward(std::int32_t token, std::int32_t pos) {
   const std::size_t dim = cfg_.embedding_length;
   embed(token, x_.data());
-  for (std::size_t l = 0; l < cfg_.n_layers; ++l)
-    decode_layer(l, x_.data(), pos, kv_, nullptr);
+  const bool offload = backend_ != nullptr && gpu_layers_ > 0 && kv_.dense_f32();
+  for (std::size_t l = 0; l < cfg_.n_layers; ++l) {
+    if (offload && l < gpu_layers_)
+      decode_layer_gpu(l, x_.data(), pos, kv_);
+    else
+      decode_layer(l, x_.data(), pos, kv_, nullptr);
+  }
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
   tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();

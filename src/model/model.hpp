@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace dbinfer::backend {
+class Backend;
+}
+
 namespace dbinfer::model {
 
 struct Config {
@@ -219,6 +223,19 @@ public:
   // forward_chunk supports.
   bool kv_dense_f32() const { return kv_.dense_f32(); }
 
+  // offloads the first n_layers transformer blocks of forward() to backend,
+  // running their per-token decode ops on the device. n_layers == 0 leaves the
+  // pure-CPU path untouched. valid only for an F16 model on the dense fp32
+  // cache; layers_f16 reports whether the weights qualify.
+  void set_gpu_offload(backend::Backend *backend, std::size_t n_layers) {
+    backend_ = backend;
+    gpu_layers_ = n_layers;
+  }
+
+  // true when the first n transformer blocks store their matmul weights as F16,
+  // the only dtype the Metal decode path reads.
+  bool layers_f16(std::size_t n) const;
+
   // rebuilds the KV cache under policy and resizes the score/resident scratch.
   // window > 0 selects the ring path; window == 0 restores the dense default.
   void configure_kv(KvPolicy policy);
@@ -258,6 +275,10 @@ private:
   void decode_layer_chunk(std::size_t layer, float *x, std::int32_t pos0, std::size_t n,
                           ChunkScratch &s, KVCache &kv);
 
+  // runs one transformer block on the backend, matching decode_layer's dense
+  // fp32 result to tolerance. falls back to decode_layer on a backend error.
+  void decode_layer_gpu(std::size_t layer, float *x, std::int32_t pos, KVCache &kv);
+
   Config cfg_;
   std::vector<LayerWeights> layers_;
   tensor::QuantMatrix token_embd_{};
@@ -278,6 +299,8 @@ private:
   std::vector<float> logits_;
   std::vector<KVCache::Resident> resident_;
   KVCache kv_{0, 0, 0, 0};
+  backend::Backend *backend_ = nullptr;
+  std::size_t gpu_layers_ = 0;
 };
 
 } // namespace dbinfer::model
