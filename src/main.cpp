@@ -286,11 +286,12 @@ int main(int argc, char **argv) {
     }
     const std::size_t n =
         std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), model.config().n_layers);
-    if (!model.layers_f16(n)) {
-      std::fprintf(stderr, "error: --gpu-layers requires an F16 model\n");
+    if (!model.layers_offloadable(n)) {
+      std::fprintf(stderr, "error: --gpu-layers requires F16, Q8_0, or Q4_0 weights\n");
       return 1;
     }
-    model.set_gpu_offload(be, n);
+    if (!model.set_gpu_offload(be, n))
+      return 1;
   }
 
   if (!opts.perplexity_path.empty())

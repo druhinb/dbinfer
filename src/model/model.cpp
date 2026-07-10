@@ -11,12 +11,46 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <span>
 #include <string>
 
 namespace dbinfer::model {
+
+AlignedF32::~AlignedF32() { std::free(ptr_); }
+
+AlignedF32 &AlignedF32::operator=(AlignedF32 &&o) noexcept {
+  if (this != &o) {
+    std::free(ptr_);
+    ptr_ = o.ptr_;
+    size_ = o.size_;
+    o.ptr_ = nullptr;
+    o.size_ = 0;
+  }
+  return *this;
+}
+
+void AlignedF32::assign(std::size_t n, float value) {
+  std::free(ptr_);
+  ptr_ = nullptr;
+  size_ = 0;
+  if (n == 0)
+    return;
+  void *p = nullptr;
+  // 16384 is the Apple Silicon page newBufferWithBytesNoCopy wraps zero-copy.
+  // rounding the length to a page lets the backend wrap the whole span safely.
+  constexpr std::size_t kPage = 16384;
+  const std::size_t bytes = ((n * sizeof(float) + kPage - 1) / kPage) * kPage;
+  if (posix_memalign(&p, kPage, bytes) != 0 || p == nullptr) {
+    std::fprintf(stderr, "fatal: KV cache allocation of %zu floats failed\n", n);
+    std::abort();
+  }
+  ptr_ = static_cast<float *>(p);
+  std::fill(ptr_, ptr_ + n, value);
+  size_ = n;
+}
 
 using gguf::Error;
 using gguf::GgmlType;
@@ -757,49 +791,99 @@ bool Model::layers_f16(std::size_t n) const {
   return true;
 }
 
-void Model::decode_layer_gpu(std::size_t layer, float *x, std::int32_t pos, KVCache &kv) {
-  const LayerWeights &L = layers_[layer];
-  backend::LayerF16 gl;
-  gl.attn_norm = L.attn_norm;
-  gl.ffn_norm = L.ffn_norm;
-  gl.wq = reinterpret_cast<const std::uint16_t *>(L.attn_q.data);
-  gl.wk = reinterpret_cast<const std::uint16_t *>(L.attn_k.data);
-  gl.wv = reinterpret_cast<const std::uint16_t *>(L.attn_v.data);
-  gl.wo = reinterpret_cast<const std::uint16_t *>(L.attn_output.data);
-  gl.wgate = reinterpret_cast<const std::uint16_t *>(L.ffn_gate.data);
-  gl.wup = reinterpret_cast<const std::uint16_t *>(L.ffn_up.data);
-  gl.wdown = reinterpret_cast<const std::uint16_t *>(L.ffn_down.data);
-  gl.bq = L.attn_q_bias;
-  gl.bk = L.attn_k_bias;
-  gl.bv = L.attn_v_bias;
-  gl.dim = cfg_.embedding_length;
-  gl.ff = cfg_.ffn_length;
-  gl.n_heads = cfg_.n_heads;
-  gl.n_kv_heads = cfg_.n_kv_heads;
-  gl.head_dim = cfg_.head_dim;
-  gl.rms_eps = cfg_.rms_eps;
-  gl.rope_theta = cfg_.rope_theta;
+namespace {
 
-  const float *k_hist = kv.key(layer, 0, 0);
-  const float *v_hist = kv.value(layer, 0, 0);
-  auto r = backend_->decode_layer(gl, x, pos, k_hist, v_hist, k_.data(), v_.data());
+std::optional<backend::WeightType> to_weight_type(gguf::GgmlType t) {
+  switch (t) {
+  case gguf::GgmlType::F16:
+    return backend::WeightType::F16;
+  case gguf::GgmlType::Q8_0:
+    return backend::WeightType::Q8_0;
+  case gguf::GgmlType::Q4_0:
+    return backend::WeightType::Q4_0;
+  default:
+    return std::nullopt;
+  }
+}
+
+backend::QWeight to_qweight(const tensor::QuantMatrix &w) {
+  return {w.data, to_weight_type(w.type).value_or(backend::WeightType::F16)};
+}
+
+} // namespace
+
+bool Model::layers_offloadable(std::size_t n) const {
+  const std::size_t limit = std::min(n, layers_.size());
+  for (std::size_t l = 0; l < limit; ++l) {
+    const LayerWeights &L = layers_[l];
+    const gguf::GgmlType t[] = {L.attn_q.type,   L.attn_k.type, L.attn_v.type,  L.attn_output.type,
+                                L.ffn_gate.type, L.ffn_up.type, L.ffn_down.type};
+    for (gguf::GgmlType ty : t)
+      if (!to_weight_type(ty))
+        return false;
+  }
+  return true;
+}
+
+bool Model::set_gpu_offload(backend::Backend *backend, std::size_t n_layers) {
+  backend_ = backend;
+  gpu_layers_ = n_layers;
+  if (backend == nullptr || n_layers == 0)
+    return true;
+
+  std::vector<backend::LayerQ> gl(n_layers);
+  for (std::size_t l = 0; l < n_layers; ++l) {
+    const LayerWeights &L = layers_[l];
+    backend::LayerQ &g = gl[l];
+    g.attn_norm = L.attn_norm;
+    g.ffn_norm = L.ffn_norm;
+    g.wq = to_qweight(L.attn_q);
+    g.wk = to_qweight(L.attn_k);
+    g.wv = to_qweight(L.attn_v);
+    g.wo = to_qweight(L.attn_output);
+    g.wgate = to_qweight(L.ffn_gate);
+    g.wup = to_qweight(L.ffn_up);
+    g.wdown = to_qweight(L.ffn_down);
+    g.bq = L.attn_q_bias;
+    g.bk = L.attn_k_bias;
+    g.bv = L.attn_v_bias;
+    g.dim = cfg_.embedding_length;
+    g.ff = cfg_.ffn_length;
+    g.n_heads = cfg_.n_heads;
+    g.n_kv_heads = cfg_.n_kv_heads;
+    g.head_dim = cfg_.head_dim;
+    g.rms_eps = cfg_.rms_eps;
+    g.rope_theta = cfg_.rope_theta;
+  }
+  auto r =
+      backend_->setup_offload(gl, kv_.dense_k(), kv_.dense_v(), kv_.capacity(), kv_.pos_stride());
   if (!r) {
-    decode_layer(layer, x, pos, kv, nullptr);
+    std::fprintf(stderr, "metal: offload setup failed (%s), staying on CPU\n",
+                 r.error().message.c_str());
+    gpu_layers_ = 0;
+    return false;
+  }
+  return true;
+}
+
+void Model::decode_token_gpu(float *x, std::int32_t pos) {
+  auto r = backend_->decode_token(x, pos);
+  if (!r) {
+    for (std::size_t l = 0; l < gpu_layers_; ++l)
+      decode_layer(l, x, pos, kv_, nullptr);
     return;
   }
-  kv.append(layer, static_cast<std::size_t>(pos), k_.data(), v_.data());
+  kv_.mark_position(static_cast<std::size_t>(pos));
 }
 
 const float *Model::forward(std::int32_t token, std::int32_t pos) {
   const std::size_t dim = cfg_.embedding_length;
   embed(token, x_.data());
   const bool offload = backend_ != nullptr && gpu_layers_ > 0 && kv_.dense_f32();
-  for (std::size_t l = 0; l < cfg_.n_layers; ++l) {
-    if (offload && l < gpu_layers_)
-      decode_layer_gpu(l, x_.data(), pos, kv_);
-    else
-      decode_layer(l, x_.data(), pos, kv_, nullptr);
-  }
+  if (offload)
+    decode_token_gpu(x_.data(), pos);
+  for (std::size_t l = offload ? gpu_layers_ : 0; l < cfg_.n_layers; ++l)
+    decode_layer(l, x_.data(), pos, kv_, nullptr);
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
   tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();

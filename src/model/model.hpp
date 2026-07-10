@@ -47,6 +47,34 @@ struct LayerWeights {
   tensor::QuantMatrix ffn_down{};
 };
 
+// page-aligned fp32 storage for the dense KV cache. the 16384-byte base lets
+// the Metal backend wrap K and V with newBufferWithBytesNoCopy, so CPU and GPU
+// share the same bytes with no per-token copy. for the CPU path it behaves like
+// the vector it replaces: assign sizes and zeroes, data hands back the base.
+class AlignedF32 {
+public:
+  AlignedF32() = default;
+  ~AlignedF32();
+  AlignedF32(const AlignedF32 &) = delete;
+  AlignedF32 &operator=(const AlignedF32 &) = delete;
+  AlignedF32(AlignedF32 &&o) noexcept : ptr_(o.ptr_), size_(o.size_) {
+    o.ptr_ = nullptr;
+    o.size_ = 0;
+  }
+  AlignedF32 &operator=(AlignedF32 &&o) noexcept;
+
+  void assign(std::size_t n, float value);
+  float *data() { return ptr_; }
+  const float *data() const { return ptr_; }
+  float &operator[](std::size_t i) { return ptr_[i]; }
+  float operator[](std::size_t i) const { return ptr_[i]; }
+  std::size_t size() const { return size_; }
+
+private:
+  float *ptr_ = nullptr;
+  std::size_t size_ = 0;
+};
+
 enum class KvDtype { F32, Int8 };
 
 // int8 V quantizes each head_dim slice in blocks of this many elements, one
@@ -141,6 +169,16 @@ public:
 
   std::size_t n_kv_heads() const { return n_kv_heads_; }
   std::size_t head_dim() const { return head_dim_; }
+  std::size_t pos_stride() const { return pos_stride_; }
+
+  // page-aligned dense fp32 K/V storage base, for the Metal backend to wrap
+  // no-copy. valid only under dense_f32().
+  float *dense_k() { return k_.data(); }
+  float *dense_v() { return v_.data(); }
+
+  // records that position pos is resident after the GPU offload wrote it into
+  // the shared cache in place. dense fp32 only.
+  void mark_position(std::size_t pos) { n_seen_ = pos + 1; }
 
 private:
   // requantizes token group g of a layer over its resident non-sink slots,
@@ -161,8 +199,8 @@ private:
   std::size_t k_scale_stride_ = 0; // per-layer stride into k_scale_
   std::size_t n_sink_ = 0;         // sink tokens kept fp32 in the dense int8 cache
   std::size_t n_seen_ = 0;
-  std::vector<float> k_;
-  std::vector<float> v_;
+  AlignedF32 k_;
+  AlignedF32 v_;
   std::vector<std::int8_t> k8_;
   std::vector<std::int8_t> v8_;
   std::vector<float> k_scale_;
@@ -224,17 +262,19 @@ public:
   bool kv_dense_f32() const { return kv_.dense_f32(); }
 
   // offloads the first n_layers transformer blocks of forward() to backend,
-  // running their per-token decode ops on the device. n_layers == 0 leaves the
-  // pure-CPU path untouched. valid only for an F16 model on the dense fp32
-  // cache; layers_f16 reports whether the weights qualify.
-  void set_gpu_offload(backend::Backend *backend, std::size_t n_layers) {
-    backend_ = backend;
-    gpu_layers_ = n_layers;
-  }
+  // copying their weights to the device and wrapping the KV cache no-copy.
+  // n_layers == 0 leaves the pure-CPU path untouched. valid only on the dense
+  // fp32 cache with layers whose weights layers_offloadable accepts. returns
+  // false and stays on CPU if the backend setup fails.
+  bool set_gpu_offload(backend::Backend *backend, std::size_t n_layers);
 
   // true when the first n transformer blocks store their matmul weights as F16,
   // the only dtype the Metal decode path reads.
   bool layers_f16(std::size_t n) const;
+
+  // true when the first n blocks' matmul weights are all F16, Q8_0, or Q4_0,
+  // the dtypes the Metal decode path reads.
+  bool layers_offloadable(std::size_t n) const;
 
   // rebuilds the KV cache under policy and resizes the score/resident scratch.
   // window > 0 selects the ring path; window == 0 restores the dense default.
@@ -275,9 +315,10 @@ private:
   void decode_layer_chunk(std::size_t layer, float *x, std::int32_t pos0, std::size_t n,
                           ChunkScratch &s, KVCache &kv);
 
-  // runs one transformer block on the backend, matching decode_layer's dense
-  // fp32 result to tolerance. falls back to decode_layer on a backend error.
-  void decode_layer_gpu(std::size_t layer, float *x, std::int32_t pos, KVCache &kv);
+  // runs the first gpu_layers_ blocks of one token on the backend in a single
+  // command buffer, matching decode_layer's dense fp32 result to tolerance.
+  // falls back to per-layer decode_layer on a backend error.
+  void decode_token_gpu(float *x, std::int32_t pos);
 
   Config cfg_;
   std::vector<LayerWeights> layers_;
