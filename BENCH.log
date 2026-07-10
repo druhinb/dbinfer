@@ -380,3 +380,80 @@ avoids the per-op-sync collapse (24 syncs/token, not ~250). Beating CPU decode
 needs quant matvec on Metal (future) or fusing all offloaded layers into one
 command buffer per token; prefill (slice a) already wins at 1.7x. Numbers are
 reported as measured, not tuned.
+
+## Phase 11 M1 (Metal quantized decode) — 2026-07-19
+
+Adds Q8_0/Q4_0 matvec on the GPU, a page-aligned dense fp32 KV cache the backend
+wraps no-copy (shared, zero per-token copy), and one command buffer per token
+for all offloaded layers. --gpu-layers now runs Q8_0/Q4_0 models (F16 still
+works). Weights copy to the device once at setup, not per token.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Models: qwen2.5-0.5b Q8_0/Q4_0/F16, 24 blocks.
+
+Bitwise gate (tests/metal_quant_test), GPU vs CPU scalar, memcmp-identical:
+
+  activation quant  rows {1,4} x in {896,4864}                bit-exact
+  Q8_0 matvec       out/in {896,4864,151936-lm_head}/{896,4864} bit-exact
+  Q4_0 matvec       same shapes                                bit-exact
+
+the integer block dot is order-free; the fp32 block accumulation contracts to
+one fma per block matching the scalar reference under clang -ffp-contract=on.
+half(d) through the hardware round-to-nearest-even matches f32_to_f16 for the
+activation scales. no rounding divergence.
+
+End-to-end greedy, --print-ids, 48 tokens, 2 prompts, gpu-layers 24 vs 0:
+
+  F16   both prompts               token-identical
+  Q8_0  'The quick brown fox'      diverges at token 30 (near-tie flip)
+  Q8_0  'Once upon a time ...'     diverges at token 37 (near-tie flip)
+  Q4_0  'The quick brown fox'      token-identical
+  Q4_0  'Once upon a time ...'     diverges at token 5 (near-tie flip)
+
+F16 stays token-identical: its kernels are bitwise (mul_mat_f16, rmsnorm,
+attention) apart from rope's fp32 transcendentals. Quant divergences are the
+documented near-tie behavior, not a matvec error. GPU quant matvec is bitwise
+to the scalar reference (gate above); the default CPU decode runs the i8mm
+kernel, whose reduction order differs within 1e-6. Comparing GPU against a
+scalar-kernel CPU decode (DBINFER_QUANT_KERNEL=scalar) moves the first flip late
+(Q8_0 token 30/37, Q4_0 fox 48/48 identical); the residual comes from the GPU
+rope fp32 pow/cos/sin gap flipping near-tie argmax tokens.
+
+Perplexity, WikiText-2 test, Q8_0, 4 chunks (non-overlapping 256-tok windows):
+
+  gpu-layers 0    PPL 13.382441
+  gpu-layers 24   PPL 13.389829   +0.055%
+
+within noise, far inside the 1% weight-quant budget.
+
+Decode tok/s, Q8_0, 128 tokens, wall(n=129)-wall(n=1), median of 3:
+
+  gpu-layers 0 (CPU threaded i8mm)   84.3
+  gpu-layers 24 (GPU)                26.4
+  (old F16 GPU per-layer path, slice b, for context: 6.96)
+
+honest read: GPU decode is 3.8x the old F16 GPU path (6.96 -> 26.4) and clears
+the 8.5 F16 CPU number, but sits 3.2x below the CPU threaded i8mm reference
+(84.3). weights no longer copy per token, so the loss is not weight bandwidth:
+at ~500 MB/token and ~400 GB/s the read floor is ~1.3 ms, against ~38 ms/token
+measured. the cost is GPU underutilization at m=1. the per-row matvec runs one
+thread per output row, attention one thread per head (14 threads), rmsnorm one
+thread per row (a single thread), so most of the GPU sits idle every dispatch.
+one command buffer per token already removed the per-layer submit collapse (1
+wait/token, not 24).
+
+M2 (fusion) should target occupancy first: a simdgroup-per-output-row reduction
+for the quant matvec (fill the 32 lanes per row instead of one thread), a
+parallel rmsnorm/softmax reduction, and attention parallelized across positions,
+not just heads. that is where the 38 ms/token goes.
+
+## llama.cpp Metal baseline — 2026-07-19
+
+external target for the metal work. tools/llama.cpp/build-metal (same pinned
+commit 0bb2919, GGML_METAL=ON), llama-bench -ngl 99, M3 Max.
+
+  qwen2.5-0.5b               pp512 tok/s    tg128 tok/s
+  q8_0                        10570          245.8
+  f16                         10949          188.3
+
+engine at M1 for scale: q8_0 decode 26.4 gpu, 84.3 cpu threaded.
