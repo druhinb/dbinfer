@@ -41,39 +41,67 @@ using namespace metal;
 
 struct MatDims { uint m; uint n_out; uint n_in; };
 
+// one simdgroup per output row, 32 lanes strided over the in-dimension. the
+// per-lane partials combine through simd_sum, so the reduction order differs
+// from matvec_f16's sequential fma. close within atol 1e-4, not bitwise.
 kernel void mul_mat_f16(device const half   *W    [[buffer(0)]],
                         device const float  *A    [[buffer(1)]],
                         device       float  *C    [[buffer(2)]],
                         constant     MatDims &dims [[buffer(3)]],
-                        uint2 gid [[thread_position_in_grid]]) {
-  const uint o = gid.x;
-  const uint r = gid.y;
+                        uint2 tg   [[threadgroup_position_in_grid]],
+                        uint  lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg.x;
+  const uint r = tg.y;
   if (o >= dims.n_out || r >= dims.m)
     return;
   device const half  *wrow = W + (ulong)o * dims.n_in;
   device const float *arow = A + (ulong)r * dims.n_in;
   float acc = 0.0f;
-  for (uint i = 0; i < dims.n_in; ++i)
+  for (uint i = lane; i < dims.n_in; i += 32)
     acc = fma((float)wrow[i], arow[i], acc);
-  C[(ulong)r * dims.n_out + o] = acc;
+  acc = simd_sum(acc);
+  if (lane == 0)
+    C[(ulong)r * dims.n_out + o] = acc;
 }
 
 struct RmsDims { uint rows; uint dim; float eps; };
+
+// one threadgroup of 256 threads per row. lanes stride the dimension, sum their
+// squares, reduce per simdgroup with simd_sum, then simdgroup 0 folds the 8
+// partials. the tree reorders the sum vs the sequential CPU rmsnorm, within
+// atol 1e-4.
+constant uint kRmsThreads = 256;
 
 kernel void rmsnorm(device const float *x   [[buffer(0)]],
                     device const float *w   [[buffer(1)]],
                     device       float *out [[buffer(2)]],
                     constant     RmsDims &d  [[buffer(3)]],
-                    uint r [[thread_position_in_grid]]) {
+                    threadgroup  float *partial [[threadgroup(0)]],
+                    uint r        [[threadgroup_position_in_grid]],
+                    uint tid      [[thread_position_in_threadgroup]],
+                    uint sg_lane  [[thread_index_in_simdgroup]],
+                    uint sg_id    [[simdgroup_index_in_threadgroup]]) {
   if (r >= d.rows)
     return;
   device const float *xr = x + (ulong)r * d.dim;
   device       float *o  = out + (ulong)r * d.dim;
   float ss = 0.0f;
-  for (uint i = 0; i < d.dim; ++i)
+  for (uint i = tid; i < d.dim; i += kRmsThreads)
     ss = ss + xr[i] * xr[i];
-  const float scale = 1.0f / sqrt(ss / (float)d.dim + d.eps);
-  for (uint i = 0; i < d.dim; ++i)
+  ss = simd_sum(ss);
+  if (sg_lane == 0)
+    partial[sg_id] = ss;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (sg_id == 0) {
+    const uint n_simd = kRmsThreads / 32;
+    float v = sg_lane < n_simd ? partial[sg_lane] : 0.0f;
+    v = simd_sum(v);
+    if (sg_lane == 0)
+      partial[0] = v;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  const float scale = 1.0f / sqrt(partial[0] / (float)d.dim + d.eps);
+  for (uint i = tid; i < d.dim; i += kRmsThreads)
     o[i] = xr[i] * scale * w[i];
 }
 
@@ -109,13 +137,19 @@ kernel void rope(device       float *x   [[buffer(0)]],
 
 struct AttnDims { uint n_positions; uint n_heads; uint n_kv_heads; uint head_dim; uint pos_stride; };
 
+// one simdgroup per query head, 32 lanes split the position range. QK^T and the
+// softmax max/sum reduce across lanes with simd_max and simd_sum; the weighted-V
+// accumulation splits the head dimension across lanes and sums positions in the
+// CPU order. the softmax sum reorders vs the sequential CPU reduction, within
+// the attention 1e-4 tolerance.
 kernel void attention(device const float *q      [[buffer(0)]],
                       device const float *k      [[buffer(1)]],
                       device const float *v      [[buffer(2)]],
                       device       float *out    [[buffer(3)]],
                       device       float *scores [[buffer(4)]],
                       constant     AttnDims &d    [[buffer(5)]],
-                      uint h [[thread_position_in_grid]]) {
+                      uint h    [[threadgroup_position_in_grid]],
+                      uint lane [[thread_index_in_simdgroup]]) {
   if (h >= d.n_heads)
     return;
   const uint gqa = d.n_heads / d.n_kv_heads;
@@ -123,33 +157,32 @@ kernel void attention(device const float *q      [[buffer(0)]],
   const float scale = 1.0f / sqrt((float)d.head_dim);
   device const float *qh = q + (ulong)h * d.head_dim;
   device       float *sc = scores + (ulong)h * d.n_positions;
-  for (uint pp = 0; pp < d.n_positions; ++pp) {
+  float lmax = -INFINITY;
+  for (uint pp = lane; pp < d.n_positions; pp += 32) {
     device const float *kp = k + (ulong)pp * d.pos_stride + (ulong)kh * d.head_dim;
     float dot = 0.0f;
     for (uint i = 0; i < d.head_dim; ++i)
       dot = dot + qh[i] * kp[i];
     sc[pp] = dot * scale;
+    lmax = max(lmax, sc[pp]);
   }
-  float m = sc[0];
-  for (uint pp = 1; pp < d.n_positions; ++pp)
-    m = max(m, sc[pp]);
-  float sum = 0.0f;
-  for (uint pp = 0; pp < d.n_positions; ++pp) {
+  const float m = simd_max(lmax);
+  float lsum = 0.0f;
+  for (uint pp = lane; pp < d.n_positions; pp += 32) {
     const float e = precise::exp(sc[pp] - m);
     sc[pp] = e;
-    sum = sum + e;
+    lsum = lsum + e;
   }
-  const float inv = 1.0f / sum;
-  for (uint pp = 0; pp < d.n_positions; ++pp)
-    sc[pp] = sc[pp] * inv;
+  const float inv = 1.0f / simd_sum(lsum);
+  threadgroup_barrier(mem_flags::mem_device);
   device float *o = out + (ulong)h * d.head_dim;
-  for (uint i = 0; i < d.head_dim; ++i)
-    o[i] = 0.0f;
-  for (uint pp = 0; pp < d.n_positions; ++pp) {
-    device const float *vp = v + (ulong)pp * d.pos_stride + (ulong)kh * d.head_dim;
-    const float w = sc[pp];
-    for (uint i = 0; i < d.head_dim; ++i)
-      o[i] = o[i] + w * vp[i];
+  for (uint i = lane; i < d.head_dim; i += 32) {
+    float acc = 0.0f;
+    for (uint pp = 0; pp < d.n_positions; ++pp) {
+      device const float *vp = v + (ulong)pp * d.pos_stride + (ulong)kh * d.head_dim;
+      acc = acc + sc[pp] * inv * vp[i];
+    }
+    o[i] = acc;
   }
 }
 
@@ -201,22 +234,36 @@ kernel void quantize_q8_0(device const float *A   [[buffer(0)]],
   }
 }
 
-// exact int8 block dot then sequential fp32 block accumulation, one thread per
-// output row. bitwise match with matvec_q8_0_scalar: the integer dot is
-// order-free, and acc + (dw*dx)*sumi contracts to one fma per block like the
-// scalar reference under clang -ffp-contract=on.
+// one simdgroup per output row. 32 lanes split the row's blocks and each writes
+// its exact integer block dot to threadgroup memory. lane 0 then accumulates the
+// fp32 partials in block order, so acc + (dw*dx)*sumi still contracts to one fma
+// per block like matvec_q8_0_scalar. the integer dot is order-free and the fp32
+// order is unchanged, so this stays bitwise vs the scalar reference.
 kernel void mul_mat_q8_0(device const uchar *W    [[buffer(0)]],
                          device const uchar *X    [[buffer(1)]],
                          device       float *C    [[buffer(2)]],
                          constant     MatDims &d   [[buffer(3)]],
-                         uint2 gid [[thread_position_in_grid]]) {
-  const uint o = gid.x;
-  const uint r = gid.y;
+                         threadgroup  int   *sumi  [[threadgroup(0)]],
+                         uint2 tg   [[threadgroup_position_in_grid]],
+                         uint  lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg.x;
+  const uint r = tg.y;
   if (o >= d.n_out || r >= d.m)
     return;
   const uint nb = d.n_in / 32;
   device const uchar *wrow = W + (ulong)o * nb * 34;
   device const uchar *xrow = X + (ulong)r * nb * 34;
+  for (uint b = lane; b < nb; b += 32) {
+    device const uchar *wb = wrow + (ulong)b * 34;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    int s = 0;
+    for (uint i = 0; i < 32; ++i)
+      s += (int)as_type<char>(wb[2 + i]) * (int)as_type<char>(xb[2 + i]);
+    sumi[b] = s;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (lane != 0)
+    return;
   float acc = 0.0f;
   for (uint b = 0; b < nb; ++b) {
     device const uchar *wb = wrow + (ulong)b * 34;
@@ -225,29 +272,42 @@ kernel void mul_mat_q8_0(device const uchar *W    [[buffer(0)]],
     const ushort dxb = (ushort)xb[0] | ((ushort)xb[1] << 8);
     const float dw = (float)as_type<half>(dwb);
     const float dx = (float)as_type<half>(dxb);
-    int sumi = 0;
-    for (uint i = 0; i < 32; ++i)
-      sumi += (int)as_type<char>(wb[2 + i]) * (int)as_type<char>(xb[2 + i]);
-    acc = fma(dw * dx, (float)sumi, acc);
+    acc = fma(dw * dx, (float)sumi[b], acc);
   }
   C[(ulong)r * d.n_out + o] = acc;
 }
 
 // same shape for Q4_0 weights: nibble j maps to element j, nibble j+16 to
 // element j+16, both centered at 8. activations stay Q8_0. bitwise match with
-// matvec_q4_0_scalar.
+// matvec_q4_0_scalar under the same split.
 kernel void mul_mat_q4_0(device const uchar *W    [[buffer(0)]],
                          device const uchar *X    [[buffer(1)]],
                          device       float *C    [[buffer(2)]],
                          constant     MatDims &d   [[buffer(3)]],
-                         uint2 gid [[thread_position_in_grid]]) {
-  const uint o = gid.x;
-  const uint r = gid.y;
+                         threadgroup  int   *sumi  [[threadgroup(0)]],
+                         uint2 tg   [[threadgroup_position_in_grid]],
+                         uint  lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg.x;
+  const uint r = tg.y;
   if (o >= d.n_out || r >= d.m)
     return;
   const uint nb = d.n_in / 32;
   device const uchar *wrow = W + (ulong)o * nb * 18;
   device const uchar *xrow = X + (ulong)r * nb * 34;
+  for (uint b = lane; b < nb; b += 32) {
+    device const uchar *wb = wrow + (ulong)b * 18;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    int s = 0;
+    for (uint j = 0; j < 16; ++j) {
+      const uint q = (uint)wb[2 + j];
+      s += ((int)(q & 0x0Fu) - 8) * (int)as_type<char>(xb[2 + j]);
+      s += ((int)(q >> 4) - 8) * (int)as_type<char>(xb[2 + j + 16]);
+    }
+    sumi[b] = s;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (lane != 0)
+    return;
   float acc = 0.0f;
   for (uint b = 0; b < nb; ++b) {
     device const uchar *wb = wrow + (ulong)b * 18;
@@ -256,13 +316,7 @@ kernel void mul_mat_q4_0(device const uchar *W    [[buffer(0)]],
     const ushort dxb = (ushort)xb[0] | ((ushort)xb[1] << 8);
     const float dw = (float)as_type<half>(dwb);
     const float dx = (float)as_type<half>(dxb);
-    int sumi = 0;
-    for (uint j = 0; j < 16; ++j) {
-      const uint q = (uint)wb[2 + j];
-      sumi += ((int)(q & 0x0Fu) - 8) * (int)as_type<char>(xb[2 + j]);
-      sumi += ((int)(q >> 4) - 8) * (int)as_type<char>(xb[2 + j + 16]);
-    }
-    acc = fma(dw * dx, (float)sumi, acc);
+    acc = fma(dw * dx, (float)sumi[b], acc);
   }
   C[(ulong)r * d.n_out + o] = acc;
 }
@@ -302,6 +356,9 @@ struct QuantDims {
 
 // BlockQ8_0 stride matching tensor::BlockQ8_0 (2-byte fp16 scale + 32 int8).
 constexpr std::size_t kQ8BlockBytes = 34;
+
+// rmsnorm threadgroup width, mirroring kRmsThreads in the shader source.
+constexpr std::uint32_t kRmsThreads = 256;
 
 // one offloaded block's weights and biases copied to the device once at setup,
 // plus the dims the encoder needs. buffers are strong under ARC.
@@ -696,9 +753,9 @@ private:
     [enc setBuffer:a offset:0 atIndex:1];
     [enc setBuffer:c offset:c_off atIndex:2];
     [enc setBytes:&dims length:sizeof(dims) atIndex:3];
-    const MTLSize grid = MTLSizeMake(out, m, 1);
-    const MTLSize group = MTLSizeMake(mul_mat_.threadExecutionWidth, 1, 1);
-    [enc dispatchThreads:grid threadsPerThreadgroup:group];
+    const MTLSize groups = MTLSizeMake(out, m, 1);
+    const MTLSize group = MTLSizeMake(32, 1, 1);
+    [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
   }
 
   // quantizes A to Q8_0 then dots against the quant weight W, both in one serial
@@ -756,9 +813,10 @@ private:
     [enc setBuffer:xq offset:0 atIndex:1];
     [enc setBuffer:c offset:c_off atIndex:2];
     [enc setBytes:&dims length:sizeof(dims) atIndex:3];
-    const MTLSize grid = MTLSizeMake(out, m, 1);
-    const MTLSize group = MTLSizeMake(pipe.threadExecutionWidth, 1, 1);
-    [enc dispatchThreads:grid threadsPerThreadgroup:group];
+    [enc setThreadgroupMemoryLength:(in / 32) * sizeof(std::int32_t) atIndex:0];
+    const MTLSize groups = MTLSizeMake(out, m, 1);
+    const MTLSize group = MTLSizeMake(32, 1, 1);
+    [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
   }
 
   void encode_rmsnorm(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> x, std::size_t x_off,
@@ -770,7 +828,10 @@ private:
     [enc setBuffer:w offset:0 atIndex:1];
     [enc setBuffer:out offset:out_off atIndex:2];
     [enc setBytes:&d length:sizeof(d) atIndex:3];
-    dispatch_1d(enc, rmsnorm_, rows);
+    [enc setThreadgroupMemoryLength:(kRmsThreads / 32) * sizeof(float) atIndex:0];
+    const MTLSize groups = MTLSizeMake(rows, 1, 1);
+    const MTLSize group = MTLSizeMake(kRmsThreads, 1, 1);
+    [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
   }
 
   void encode_rope(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> x, std::size_t x_off,
@@ -806,7 +867,9 @@ private:
     [enc setBuffer:out offset:0 atIndex:3];
     [enc setBuffer:scores offset:0 atIndex:4];
     [enc setBytes:&d length:sizeof(d) atIndex:5];
-    dispatch_1d(enc, attention_, n_heads);
+    const MTLSize groups = MTLSizeMake(n_heads, 1, 1);
+    const MTLSize group = MTLSizeMake(32, 1, 1);
+    [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
   }
 
   void encode_add(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> a, std::size_t a_off,
