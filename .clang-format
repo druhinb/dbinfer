@@ -1,0 +1,3 @@
+# CLAUDE.md: clang-format runs via hook; no hand-formatting.
+BasedOnStyle: LLVM
+ColumnLimit: 100
