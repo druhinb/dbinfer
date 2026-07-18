@@ -1,0 +1,170 @@
+{
+  "provenance": {
+    "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct",
+    "hf_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "hf_resolved_commit": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "seed": 0,
+    "input_ids": [
+      40,
+      1079,
+      264,
+      4128,
+      1614,
+      13
+    ],
+    "positions": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "versions": {
+      "python": "3.9.6",
+      "numpy": "1.26.4",
+      "torch": "2.2.2",
+      "transformers": "4.44.2"
+    },
+    "generated_utc": "2026-07-18T18:24:59.313238+00:00"
+  },
+  "tensors": [
+    {
+      "name": "embedding",
+      "file": "embedding.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"
+    },
+    {
+      "name": "rmsnorm_in",
+      "file": "rmsnorm_in.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"
+    },
+    {
+      "name": "rmsnorm_out",
+      "file": "rmsnorm_out.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "7061b0c3a1c323df3a7431c9e829e0313b77010cf55e64920a9c245b773cea20"
+    },
+    {
+      "name": "rope_q_in",
+      "file": "rope_q_in.bin",
+      "dtype": "f32",
+      "shape": [
+        14,
+        6,
+        64
+      ],
+      "n_elements": 5376,
+      "sha256": "dfc409b27811563fef7f5a339513743f628965d295612fda1d47b2fa818f59ec"
+    },
+    {
+      "name": "rope_q_out",
+      "file": "rope_q_out.bin",
+      "dtype": "f32",
+      "shape": [
+        14,
+        6,
+        64
+      ],
+      "n_elements": 5376,
+      "sha256": "46646b9c24b480729e20c69d4d26227b423da75853398aa710705b5e2265af28"
+    },
+    {
+      "name": "rope_k_in",
+      "file": "rope_k_in.bin",
+      "dtype": "f32",
+      "shape": [
+        2,
+        6,
+        64
+      ],
+      "n_elements": 768,
+      "sha256": "46f2e2b7d0ee2ae4f1824ae7f51ecd70915c436e3be174c7e33ba278e47d4f90"
+    },
+    {
+      "name": "rope_k_out",
+      "file": "rope_k_out.bin",
+      "dtype": "f32",
+      "shape": [
+        2,
+        6,
+        64
+      ],
+      "n_elements": 768,
+      "sha256": "4d54b435770897e3233457789f98f8b609c151b06eeecdc1f07ac34ec866a383"
+    },
+    {
+      "name": "attn_head0_out",
+      "file": "attn_head0_out.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        64
+      ],
+      "n_elements": 384,
+      "sha256": "9189f897ecf778c3299449fd8a0d188d813859baba43923eef02ab559a3bd307"
+    },
+    {
+      "name": "layer0_out",
+      "file": "layer0_out.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "84cd66916c4aea4ab4718675e1a42f2bb8a03f665587e06b51c11d0b9b33f339"
+    },
+    {
+      "name": "swiglu_in",
+      "file": "swiglu_in.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "19d12733ece64684c21aa22bef8c750c1964e3dc111f663266a1cfe01651c928"
+    },
+    {
+      "name": "swiglu_out",
+      "file": "swiglu_out.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        896
+      ],
+      "n_elements": 5376,
+      "sha256": "db691f3d440f886cf096583ebead8ffd626fa903535921159b3f294d19def988"
+    },
+    {
+      "name": "logits",
+      "file": "logits.bin",
+      "dtype": "f32",
+      "shape": [
+        6,
+        151936
+      ],
+      "n_elements": 911616,
+      "sha256": "02d7178b32f6dd9e6dc75cb5c729a4dd1a8721d52802dbb4b52046066fb9738c"
+    }
+  ],
+  "parity_gguf": null
+}
