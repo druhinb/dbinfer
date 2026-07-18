@@ -1,15 +1,8 @@
 #!/usr/bin/env bash
-# Greedy token-ID parity: llama.cpp oracle vs our CLI, same GGUF/prompt.
+# Greedy token-trajectory parity: llama.cpp oracle vs our CLI, same GGUF/prompt.
 #
 #   tools/parity_check.sh <model.gguf> "<prompt>" N
 #
-# Runs the pinned llama.cpp oracle at temp 0 (docs/VERIFICATION.md:34-46),
-# extracts the N continuation token IDs, and diffs them against our engine's
-# IDs. Raw prompt, NO chat template (parity caveat, VERIFICATION.md:43-46).
-#
-# Phase 0: our engine does not exist yet. The oracle half runs; our half is a
-# clean stub that exits with a "engine not built (Phase 1)" notice. This script
-# becomes a real two-sided diff once the Phase 1 CLI lands.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then
@@ -36,34 +29,40 @@ if [[ ! -f "$model" ]]; then
 	exit 1
 fi
 
-echo "== oracle (llama.cpp) =="
-# --no-display-prompt so stdout is only the continuation text. Raw prompt.
-oracle_text="$("$cli" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 \
-	--no-display-prompt 2>/dev/null)"
-
-# Turn the continuation text into token IDs, keep the first N.
-oracle_ids="$("$tok" -m "$model" -p "$oracle_text" 2>/dev/null |
-	grep -oE '^[[:space:]]*[0-9]+' | tr -d ' ' | head -n "$n" | tr '\n' ' ')"
-echo "oracle ids: $oracle_ids"
-
-# --- Our engine (Phase 1+) --------------------------------------------------
 engine="$root/build/release/engine"
 if [[ ! -x "$engine" ]]; then
-	echo
-	echo "engine not built yet (Phase 1): $engine absent."
-	echo "Oracle side ran; our-CLI side is stubbed until the engine exists."
-	echo "Parity diff will run once Phase 1 lands the CLI."
-	exit 0
+	echo "error: engine not built: $engine (cmake --build build/release)." >&2
+	exit 1
 fi
 
-echo "== ours (dbinfer) =="
-ours_ids="$("$engine" -m "$model" -p "$prompt" -n "$n" --temp 0 --print-ids 2>/dev/null |
-	grep -oE '[0-9]+' | head -n "$n" | tr '\n' ' ')"
-echo "ours ids:   $ours_ids"
+echo "== oracle (llama.cpp) =="
+oracle_text="$("$cli" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 \
+	-no-cnv --no-display-prompt </dev/null 2>/dev/null)"
 
-if [[ "$oracle_ids" == "$ours_ids" ]]; then
-	echo "PARITY OK ($n tokens identical)"
+echo "== ours (dbinfer) =="
+ours_text="$("$engine" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 </dev/null 2>/dev/null)"
+ours_ids="$("$engine" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 --print-ids </dev/null 2>/dev/null |
+	grep -oE '[0-9]+' | head -n "$n" | tr '\n' ' ')"
+n_ids="$(printf '%s\n' "$ours_ids" | wc -w | tr -d ' ')"
+
+# Informational only: re-tokenized oracle ids (see header for the caveat).
+oracle_ids="$("$tok" -m "$model" -p "$oracle_text" --ids --no-bos 2>/dev/null |
+	tr -d '[]' | tr ',' '\n' | grep -oE '[0-9]+' | head -n "$n" | tr '\n' ' ')"
+
+echo "ours ids:        $ours_ids"
+echo "oracle retok ids:$oracle_ids"
+if [[ "$ours_ids" != "$oracle_ids" ]]; then
+	echo "note: raw-id lists differ; this is the detok/retok artifact if the"
+	echo "      continuation below is byte-identical (see script header)."
+fi
+
+if [[ "$ours_text" == "$oracle_text" ]]; then
+	echo "PARITY OK ($n_ids tokens, continuation byte-identical)"
 	exit 0
 fi
 echo "PARITY MISMATCH" >&2
+echo "--- ours ---" >&2
+printf '%s\n' "$ours_text" >&2
+echo "--- oracle ---" >&2
+printf '%s\n' "$oracle_text" >&2
 exit 1

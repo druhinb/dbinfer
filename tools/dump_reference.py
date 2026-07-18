@@ -185,6 +185,29 @@ def main() -> int:
     for h in handles:
         h.remove()
 
+    # Analytic softmax/SiLU references plus the layer-0 RMSNorm weight. These are
+    # computed with numpy (not torch) off a separate default_rng(0) stream, so
+    # the digests of the torch-captured tensors above are never perturbed and
+    # ops_test needs no GGUF to get the RMSNorm weight.
+    rng = np.random.default_rng(0)
+
+    silu_in = rng.standard_normal(4096).astype("<f4")
+    silu_out = (silu_in / (1.0 + np.exp(-silu_in.astype(np.float64)))).astype("<f4")
+
+    softmax_in = rng.standard_normal((8, 512)).astype("<f4")
+    sm = softmax_in.astype(np.float64)
+    sm = np.exp(sm - sm.max(axis=1, keepdims=True))
+    softmax_out = (sm / sm.sum(axis=1, keepdims=True)).astype("<f4")
+
+    captured["silu_in"] = np.ascontiguousarray(silu_in, dtype="<f4")
+    captured["silu_out"] = np.ascontiguousarray(silu_out, dtype="<f4")
+    captured["softmax_in"] = np.ascontiguousarray(softmax_in, dtype="<f4")
+    captured["softmax_out"] = np.ascontiguousarray(softmax_out, dtype="<f4")
+    captured["rmsnorm_weight"] = np.ascontiguousarray(
+        layer0.input_layernorm.weight.detach().to(torch.float32).cpu().numpy(),
+        dtype="<f4",
+    )
+
     order = [
         "embedding",
         "rmsnorm_in",
@@ -198,6 +221,11 @@ def main() -> int:
         "swiglu_in",
         "swiglu_out",
         "logits",
+        "silu_in",
+        "silu_out",
+        "softmax_in",
+        "softmax_out",
+        "rmsnorm_weight",
     ]
     missing = [n for n in order if n not in captured]
     if missing:
