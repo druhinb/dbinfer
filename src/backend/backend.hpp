@@ -112,18 +112,28 @@ public:
   // copies each offloaded block's weights to the device once and wraps the dense
   // fp32 KV cache no-copy. k_base/v_base point at the page-aligned
   // [n_layers][capacity][pos_stride] arrays; layers cover the first layers.size()
-  // blocks. must be called before decode_token and re-called if the model or
-  // cache layout changes.
-  [[nodiscard]] virtual std::expected<void, Error> setup_offload(std::span<const LayerQ> layers,
-                                                                 float *k_base, float *v_base,
-                                                                 std::size_t capacity,
-                                                                 std::size_t pos_stride) = 0;
+  // blocks. output_norm and lm_head feed the on-device final norm and logits
+  // projection used by decode_token_full; lm_head has vocab_size rows of dim.
+  // must be called before decode_token and re-called if the model or cache
+  // layout changes.
+  [[nodiscard]] virtual std::expected<void, Error>
+  setup_offload(std::span<const LayerQ> layers, float *k_base, float *v_base, std::size_t capacity,
+                std::size_t pos_stride, const float *output_norm, QWeight lm_head,
+                std::size_t vocab_size) = 0;
 
   // runs every prepared block of one token in a single command buffer: rmsnorm,
   // QKV, bias, rope, cache append into the bound KV, attention, output proj,
   // residual, FFN. x is the residual stream [dim], updated in place. reads and
   // writes the bound KV at slot pos of each block. one waitUntilCompleted.
   [[nodiscard]] virtual std::expected<void, Error> decode_token(float *x, std::int32_t pos) = 0;
+
+  // runs every prepared block, the final rmsnorm, and the lm_head projection on
+  // one command buffer. x is the input embedding row [dim]; the returned pointer
+  // views the shared logits buffer [vocab_size], valid until the next call. use
+  // only when every block is offloaded (no CPU blocks run after). writes the
+  // bound KV at slot pos. one waitUntilCompleted.
+  [[nodiscard]] virtual std::expected<const float *, Error> decode_token_full(const float *x,
+                                                                              std::int32_t pos) = 0;
 };
 
 // resolves once from DBINFER_BACKEND. nullptr selects the CPU reference path,

@@ -342,6 +342,7 @@ private:
   KVCache kv_{0, 0, 0, 0};
   backend::Backend *backend_ = nullptr;
   std::size_t gpu_layers_ = 0;
+  bool gpu_head_ = false;
 };
 
 } // namespace dbinfer::model

@@ -53,6 +53,10 @@ if(DBINFER_METAL)
   add_executable(metal_quant_test metal_quant_test.cpp)
   target_link_libraries(metal_quant_test PRIVATE dbinfer_tensor dbinfer_backend)
   add_test(NAME metal_quant_test COMMAND metal_quant_test)
+
+  add_executable(metal_head_test metal_head_test.cpp)
+  target_link_libraries(metal_head_test PRIVATE dbinfer_tensor dbinfer_backend)
+  add_test(NAME metal_head_test COMMAND metal_head_test)
 endif()
 
 add_executable(sample_test sample_test.cpp)
