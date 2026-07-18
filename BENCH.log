@@ -552,3 +552,113 @@ into an indirect command buffer replayed per token instead of re-encoded; (2)
 move the lm_head matvec onto the GPU to erase the ~3.6 ms CPU tail; (3) drop the
 per-token host buffer alloc/memcpy by keeping x resident on the device across
 the token loop.
+
+## Phase 11 M3 (Metal CPU-tail elimination, persistent activations) — 2026-07-19
+
+M2 left the per-token wall split ~5.46 ms GPU (Q8_0) plus ~3.6 ms CPU: the
+151936x896 lm_head on CPU, final rmsnorm, token embedding, sampling, and the
+per-token MTLBuffer alloc/memcpy. M3 moves the final rmsnorm and lm_head onto
+the same per-token command buffer, keeps every activation device-resident
+across the token loop, and folds the two residual adds into the matvec
+epilogue.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Models: qwen2.5-0.5b Q8_0/F16, 24 blocks.
+
+Changes:
+
+  decode_token_full         appends output_norm + lm_head to the layer command
+                            buffer, returns the shared logits buffer pointer.
+                            the CPU touches only the embedding row in and the
+                            logits out. one waitUntilCompleted per token.
+  persistent activations    x, normed, q/attn, scores, gate/up and their quant
+                            blocks allocate once in setup_offload and reuse
+                            every token. no per-token buffer alloc or host copy.
+  residual fold             the wo and wdown matvec epilogue writes acc + x[o]
+                            rather than acc, dropping the two add_inplace
+                            dispatches per layer. fp32 add is commutative in
+                            IEEE, so the quant path stays bitwise.
+
+Dispatch count per token (Q8_0):
+
+  M2   22/layer x 24 + 0 tail (lm_head on CPU)   = 528
+  M3   20/layer x 24 + 3 tail (rmsnorm+quant+lm) = 483
+
+  the fold removes 2 dispatches/layer; the tail adds 3 on-device dispatches
+  that erase the CPU lm_head. F16 runs 16/layer x 24 + 2 tail = 386.
+
+Bitwise gate (tests/metal_quant_test), GPU vs CPU scalar, memcmp-identical:
+
+  activation quant, Q8_0 matvec, Q4_0 matvec, all shapes incl 151936 lm_head:
+  bit-exact. the residual fold keeps add_res=0 on the isolated matvec tests,
+  and the folded fp32 add is bitwise vs a separate add on the same acc.
+
+New gate (tests/metal_head_test), the on-device final norm + lm_head:
+
+  final rmsnorm GPU vs CPU            max_err 2.384e-07  (gate 1e-4)
+  Q8_0 lm_head bitwise on same normed memcmp identical
+  Q4_0 lm_head bitwise on same normed memcmp identical
+  Q8_0 tail (rmsnorm+lm_head) vs CPU  max_err 0.000e+00  (gate 1e-4)
+  F16  tail (rmsnorm+lm_head) vs CPU  max_err 8.583e-06  (gate 1e-3)
+
+Tolerance gates (tests/metal_ops_test, tests/metal_matmul_test) unchanged:
+
+  rmsnorm 1.192e-06, rope 4.427e-05, attention 1.192e-07, f16 matvec ratio 0.64.
+
+End-to-end greedy, --print-ids, 48 tokens, 2 prompts, gpu-layers 24 vs 0:
+
+  F16   both prompts               token-identical
+  Q8_0  'The quick brown fox'      diverges at token 31 (M2: 30)
+  Q8_0  'Once upon a time'         diverges at token 10 (M2: 9)
+
+F16 stays token-identical through the on-device lm_head. Q8_0 near-tie flips
+track the documented rmsnorm/attention reorder, not the matvec, which is
+bitwise. gated by perplexity.
+
+Perplexity, WikiText-2 test, Q8_0, 4 chunks:
+
+  gpu-layers 0    PPL 13.382441
+  gpu-layers 24   PPL 13.397497   +0.112%   (M2: +0.112%)
+
+identical to M2, far inside the 1% budget. the on-device lm_head adds no
+perplexity drift.
+
+Decode tok/s, 128 tokens, wall(n=129)-wall(n=1), median of 3:
+
+  model  CPU threaded   M2 gpu   M3 gpu   llama.cpp metal
+  Q8_0   90.1           110.2    134.7    245.8
+  F16    8.5            24.9     120.8    188.3
+
+Q8_0 GPU is 1.22x M2 (110.2 -> 134.7). F16 GPU is 4.85x M2 (24.9 -> 120.8): the
+F16 lm_head (151936x896 dequant) dominated the M2 CPU tail, so moving it to the
+GPU is the whole jump.
+
+Per-token breakdown (DBINFER_METAL_TIMING, steady_clock encode + GPUEndTime -
+GPUStartTime, mean over 128 tokens at position 0-128):
+
+  model  encode   gpu      wall     cpu tail
+  Q8_0   0.18 ms  6.75 ms  7.35 ms  ~0 (on GPU)
+  F16    0.15 ms  7.61 ms  8.23 ms  ~0 (on GPU)
+
+CPU encode is 0.15-0.18 ms/token, ~2% of wall. an indirect command buffer or
+encode-once replay would attack that 2% only, so M3 does not implement it: the
+measurement does not justify the complexity. the wall is the GPU command-buffer
+time, which is the serial dependency chain across ~480 dispatches at m=1, launch
+latency dominated. the residual fold removed 48 light dispatches per token with
+no measurable wall change, direct evidence that dispatch-count reduction does
+not convert to throughput at this scale; the cost is per-dispatch latency over
+the heavy matvecs, not the count of light ops.
+
+Gap analysis vs llama.cpp 245.8 (Q8_0). M3 closed the CPU tail (3.6 ms -> 0) and
+the per-token alloc/copy (encode now 0.18 ms). the remaining 6.75 ms GPU time is
+~480 serial m=1 dispatches. llama.cpp does the token in 4.07 ms with far fewer,
+wider dispatches. closing this needs each dispatch to do more work, not fewer
+tiny ones: batch the QKV and gate/up projections into single wide matvecs and
+run the matvec with simdgroup_matrix tiles so the GPU is compute-bound rather
+than launch-bound. that is M4.
+
+M4 should target, in order: (1) simdgroup_matrix matvec/prefill so each dispatch
+saturates the GPU and the m=1 chain stops being launch-bound; (2) batch QKV and
+gate/up into single dispatches (one input, multiple weights) to cut the heavy
+dispatch count where it now matters; (3) GPU speculative verify. skip ICB: the
+encode measurement (0.18 ms) does not justify it.
