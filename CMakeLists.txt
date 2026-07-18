@@ -5,6 +5,7 @@ project(dbinfer CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_compile_options(-fno-exceptions -fno-rtti -Wall -Wextra)
 
@@ -18,4 +19,6 @@ if(DBINFER_SANITIZE)
 endif()
 
 enable_testing()
+add_subdirectory(src)
+add_subdirectory(tools)
 add_subdirectory(tests)

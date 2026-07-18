@@ -5,6 +5,26 @@
 # (fresh checkout before running the dumper), skip the target gracefully so the
 # build still succeeds — the plan requires both configs to build regardless.
 
+add_executable(gguf_test gguf_test.cpp)
+target_link_libraries(gguf_test PRIVATE dbinfer_gguf)
+add_test(NAME gguf_test COMMAND gguf_test)
+
+add_executable(tensor_matmul_test tensor_matmul_test.cpp)
+target_link_libraries(tensor_matmul_test PRIVATE dbinfer_tensor)
+add_test(NAME tensor_matmul_test COMMAND tensor_matmul_test)
+
+add_executable(dequant_test dequant_test.cpp)
+target_link_libraries(dequant_test PRIVATE dbinfer_tensor)
+add_test(NAME dequant_test COMMAND dequant_test)
+
+add_executable(sample_test sample_test.cpp)
+target_link_libraries(sample_test PRIVATE dbinfer_sample)
+add_test(NAME sample_test COMMAND sample_test)
+
+add_executable(args_test args_test.cpp)
+target_link_libraries(args_test PRIVATE dbinfer_args)
+add_test(NAME args_test COMMAND args_test)
+
 set(GOLDEN_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/golden/manifest_generated.hpp")
 
 if(EXISTS "${GOLDEN_MANIFEST}")
@@ -13,8 +33,37 @@ if(EXISTS "${GOLDEN_MANIFEST}")
   target_compile_definitions(golden_reload_test
     PRIVATE DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
   add_test(NAME golden_reload_test COMMAND golden_reload_test)
+
+  add_executable(ops_test ops_test.cpp)
+  target_link_libraries(ops_test PRIVATE dbinfer_tensor)
+  target_compile_definitions(ops_test
+    PRIVATE DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+  add_test(NAME ops_test COMMAND ops_test)
 else()
   message(STATUS
     "tests/golden/manifest_generated.hpp not found — skipping golden_reload_test. "
     "Run tools/dump_reference.py to generate goldens.")
+endif()
+
+set(TEST_GGUF "${CMAKE_SOURCE_DIR}/tools/llama.cpp/models/qwen2.5-0.5b.gguf")
+if(EXISTS "${TEST_GGUF}")
+  add_executable(tokenizer_test tokenizer_test.cpp)
+  target_include_directories(tokenizer_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(tokenizer_test PRIVATE dbinfer_tokenizer)
+  target_compile_definitions(tokenizer_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
+  add_test(NAME tokenizer_test COMMAND tokenizer_test)
+
+  if(EXISTS "${GOLDEN_MANIFEST}")
+    add_executable(model_test model_test.cpp)
+    target_include_directories(model_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(model_test PRIVATE dbinfer_model)
+    target_compile_definitions(model_test PRIVATE
+      DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
+      DBINFER_TEST_GGUF="${TEST_GGUF}")
+    add_test(NAME model_test COMMAND model_test)
+  else()
+    message(STATUS "goldens not found — skipping model_test.")
+  endif()
+else()
+  message(STATUS "qwen2.5-0.5b.gguf not found — skipping tokenizer_test.")
 endif()
