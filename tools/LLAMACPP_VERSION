@@ -1,0 +1,9 @@
+# external oracle for parity/perplexity 
+repo=https://github.com/ggml-org/llama.cpp.git
+tag=b4991
+commit=0bb2919335d00ff0bc79d5015da95c422de51f03
+date=2026-07-18
+
+# CPU-only build
+flags=-DCMAKE_BUILD_TYPE=Release -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DGGML_NATIVE=ON
+targets=llama-cli llama-tokenize llama-perplexity llama-bench

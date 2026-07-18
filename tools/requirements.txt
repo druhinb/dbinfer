@@ -1,0 +1,6 @@
+torch==2.2.2
+transformers==4.44.2
+numpy==1.26.4
+safetensors==0.4.5
+huggingface_hub==0.24.6
+sentencepiece==0.2.0
