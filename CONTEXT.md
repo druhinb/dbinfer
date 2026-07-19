@@ -72,3 +72,27 @@ passing at baseline).
 - Q8_0 logits atol 5e-2 AND argmax must match reference.
 - Q4_0 / Q4_K: no fixed logit tolerance, verified by parity + perplexity.
 - SIMD vs scalar: atol 1e-6, property-tested on 10k random blocks.
+
+## Quantized parity is near-tie-bounded
+
+Do not re-litigate quantized greedy parity as a kernel bug. Phase 4 settled it
+with evidence:
+
+- Activation quantization to Q8_0 is bit-exact to ggml `quantize_row_q8_0`
+  (20000 blocks, zero scale or quant mismatches).
+- The int8 block dot is exact integer arithmetic; the sdot and i8mm kernels are
+  bit-identical to the scalar reference (property test, atol 1e-6, 33835 blocks
+  each plus zero, saturated, and denormal edges).
+
+Residual greedy divergences from `llama-cli` are single-token near-tie flips
+from two floating-point reproduction gaps, not from wrong math:
+
+- KV-cache dtype: `llama-cli` defaults to an fp16 KV cache; this engine keeps
+  fp32 KV. `tools/parity_check.sh` now pins the oracle with `-ctk f32 -ctv f32`.
+- Reduction order: ggml reduces the matmul in float lanes; the reference sums
+  block-serial. Matching ggml's order conflicts with the 1e-6 scalar gate.
+
+Under the pinned oracle, parity is 2/3 (Q8_0) and 1/3 (Q4_0); the flips move
+with either gap and no single config reaches 3/3. Quantized correctness is
+gated by perplexity (see docs/VERIFICATION.md layer 4), not token-identical
+parity.
