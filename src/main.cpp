@@ -2,6 +2,7 @@
 #include "gguf/gguf.hpp"
 #include "grammar/grammar.hpp"
 #include "model/model.hpp"
+#include "model/speculative.hpp"
 #include "sample/sample.hpp"
 #include "tensor/thread_pool.hpp"
 #include "tokenizer/tokenizer.hpp"
@@ -152,6 +153,68 @@ int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer
   return 0;
 }
 
+// speculative decode: a quantized draft proposes tokens, the F16 target verifies
+// them in one batched forward. greedy, so the output is token-identical to
+// target-only decode. loads the draft, checks vocab and cache compatibility,
+// prints the generated tokens, and logs the acceptance rate to stderr.
+int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tokenizer &tok,
+                    const dbinfer::cli::CliOptions &opts) {
+  auto dloaded = dbinfer::gguf::load(opts.draft_model);
+  if (!dloaded) {
+    std::fprintf(stderr, "error: load draft gguf: %s\n",
+                 dbinfer::gguf::to_string(dloaded.error()).c_str());
+    return 1;
+  }
+  auto dret = dbinfer::model::Model::load(*dloaded);
+  if (!dret) {
+    std::fprintf(stderr, "error: load draft model: %s\n",
+                 dbinfer::gguf::to_string(dret.error()).c_str());
+    return 1;
+  }
+  dbinfer::model::Model &draft = *dret;
+
+  if (draft.config().vocab_size != target.config().vocab_size) {
+    std::fprintf(stderr, "error: draft/target vocab mismatch (%zu vs %zu)\n",
+                 draft.config().vocab_size, target.config().vocab_size);
+    return 1;
+  }
+  if (!target.kv_dense_f32() || !draft.kv_dense_f32()) {
+    std::fprintf(stderr, "error: speculative decode requires the dense fp32 cache\n");
+    return 1;
+  }
+
+  std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
+  if (history.empty()) {
+    std::fprintf(stderr, "error: prompt tokenized to zero tokens\n");
+    return 1;
+  }
+
+  dbinfer::model::SpecStats stats;
+  std::vector<std::int32_t> gen = dbinfer::model::speculative_generate(
+      target, draft, history, static_cast<std::size_t>(opts.draft_k),
+      static_cast<std::size_t>(opts.n), tok.eos_id(), &stats);
+
+  for (std::int32_t next_tok : gen) {
+    if (opts.print_ids) {
+      std::printf("%d\n", next_tok);
+    } else {
+      std::int32_t one[1] = {next_tok};
+      std::string piece = tok.decode(std::span<const std::int32_t>(one, 1));
+      std::fputs(piece.c_str(), stdout);
+      std::fflush(stdout);
+    }
+  }
+  if (!opts.print_ids)
+    std::fputc('\n', stdout);
+
+  const double rate =
+      stats.proposed > 0 ? static_cast<double>(stats.accepted) / static_cast<double>(stats.proposed)
+                         : 0.0;
+  std::fprintf(stderr, "speculative: k=%d proposed=%zu accepted=%zu rate=%.4f rounds=%zu\n",
+               opts.draft_k, stats.proposed, stats.accepted, rate, stats.rounds);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -193,6 +256,9 @@ int main(int argc, char **argv) {
   if (!opts.perplexity_path.empty())
     return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
                            : run_perplexity(model, tok, opts);
+
+  if (!opts.draft_model.empty())
+    return run_speculative(model, tok, opts);
 
   std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
   if (history.empty()) {

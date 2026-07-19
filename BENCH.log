@@ -215,3 +215,36 @@ model forward.
 
   1000/1000 parse as valid JSON  (671 completed naturally, 329 closed along the
   shortest grammar-valid suffix when the 64-token sampling budget ran out).
+
+## Phase 9 (speculative decoding)
+
+A quantized draft (qwen2.5-0.5b Q4_0) proposes k tokens greedily; the F16
+target (qwen2.5-0.5b) verifies them in one forward_chunk over k+1 positions,
+accepting the longest prefix where the draft token equals the target's greedy
+argmax and taking the target's argmax on the first mismatch. Greedy, so the
+output is token-identical to target-only decode by construction.
+
+Token-identical gate (--print-ids, greedy, diff vs spec off), n 64:
+
+  ./build/release/engine -m qwen2.5-0.5b.gguf -p "<prompt>" -n 64 --print-ids \
+    [--draft-model qwen2.5-0.5b-q4_0.gguf --draft-k {4,8}]
+
+  prompt "The quick brown fox"              k=4 IDENTICAL  rate 0.7656
+  prompt "The quick brown fox"              k=8 IDENTICAL  rate 0.6591
+  prompt "Once upon a time in a distant land" k=4 IDENTICAL  rate 0.6000
+  prompt "Once upon a time in a distant land" k=8 IDENTICAL  rate 0.3487
+
+Wall clock, prompt "Once upon a time in a distant land", 12 P-cores, decode
+delta 128/(wall(144)-wall(16)) so model load and prefill cancel:
+
+  spec off        8.65 tok/s
+  spec on k=4     4.80 tok/s   0.55x
+
+Speedup is below 1x, expected and honest: this engine has no fused batched
+matmul that shares the weight read across the k verify rows. The bit-identical
+forward_chunk reuses the per-row matvec, so the target's k+1-row verify costs
+about k+1 sequential forwards, and each round also runs k draft forwards. A
+fused batched matmul would amortize the weight read but break bit-identity via
+FMA contraction (Phase 7), losing the token-identical gate. The value here is
+the exact-output verification path and the measured acceptance rate, not a
+positive wall-clock speedup on this memory-bound single-request engine.
