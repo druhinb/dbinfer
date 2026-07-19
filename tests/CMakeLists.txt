@@ -45,6 +45,10 @@ add_executable(sample_test sample_test.cpp)
 target_link_libraries(sample_test PRIVATE dbinfer_sample)
 add_test(NAME sample_test COMMAND sample_test)
 
+add_executable(grammar_test grammar_test.cpp)
+target_link_libraries(grammar_test PRIVATE dbinfer_grammar)
+add_test(NAME grammar_test COMMAND grammar_test)
+
 add_executable(args_test args_test.cpp)
 target_link_libraries(args_test PRIVATE dbinfer_args)
 add_test(NAME args_test COMMAND args_test)
