@@ -5,7 +5,9 @@
 #include "tensor/matmul_neon.hpp"
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
+#include <string_view>
 #include <vector>
 
 namespace dbinfer::tensor {
@@ -97,11 +99,22 @@ struct QuantDispatch {
 };
 
 // resolved once from runtime detection; scalar stays the reference fallback.
+// m=1 decode is compute-bound at this model size, so i8mm outruns sdot by ~29%
+// (BENCH.log). DBINFER_QUANT_KERNEL forces a path for benchmarking.
 const QuantDispatch &quant_dispatch() {
   static const QuantDispatch d = [] {
     const CpuFeatures &f = cpu_features();
-    return QuantDispatch{f.dotprod ? matvec_q8_0_sdot : matvec_q8_0_scalar,
-                         f.dotprod ? matvec_q4_0_sdot : matvec_q4_0_scalar};
+    const char *sel = std::getenv("DBINFER_QUANT_KERNEL");
+    const std::string_view k = sel != nullptr ? sel : "";
+    if (k == "scalar")
+      return QuantDispatch{matvec_q8_0_scalar, matvec_q4_0_scalar};
+    if (k == "sdot" && f.dotprod)
+      return QuantDispatch{matvec_q8_0_sdot, matvec_q4_0_sdot};
+    if (f.i8mm)
+      return QuantDispatch{matvec_q8_0_i8mm, matvec_q4_0_i8mm};
+    if (f.dotprod)
+      return QuantDispatch{matvec_q8_0_sdot, matvec_q4_0_sdot};
+    return QuantDispatch{matvec_q8_0_scalar, matvec_q4_0_scalar};
   }();
   return d;
 }

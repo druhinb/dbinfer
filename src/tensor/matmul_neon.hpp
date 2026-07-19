@@ -20,6 +20,13 @@ void matvec_q8_0_sdot(const std::byte *W, const BlockQ8_0 *xq, float *y, std::si
 void matvec_q4_0_sdot(const std::byte *W, const BlockQ8_0 *xq, float *y, std::size_t out,
                       std::size_t in);
 
+// i8mm variants dot two output rows per smmla tile; reached only after
+// cpu_features().i8mm is set. an odd final row falls back to the sdot path.
+void matvec_q8_0_i8mm(const std::byte *W, const BlockQ8_0 *xq, float *y, std::size_t out,
+                      std::size_t in);
+void matvec_q4_0_i8mm(const std::byte *W, const BlockQ8_0 *xq, float *y, std::size_t out,
+                      std::size_t in);
+
 } // namespace dbinfer::tensor
 
 #endif // DBINFER_TENSOR_MATMUL_NEON_HPP
