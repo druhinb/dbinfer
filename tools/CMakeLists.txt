@@ -3,3 +3,6 @@ target_link_libraries(gguf_dump_tool PRIVATE dbinfer_gguf)
 
 add_executable(bench bench.cpp)
 target_link_libraries(bench PRIVATE dbinfer_model)
+
+add_executable(grammar_json_gen grammar_json_gen.cpp)
+target_link_libraries(grammar_json_gen PRIVATE dbinfer_model dbinfer_grammar dbinfer_sample)

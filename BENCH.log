@@ -187,3 +187,31 @@ per-block(32) per-token. both configs meet the 0.5% budget; the shipped default
 is per-channel K + 4 fp32 sinks (--kv-sink 4). --kv-int8 stays opt-in and the
 fp32 dense cache is the default, byte-for-byte unchanged (PPL 17.699375 here
 matches the pre-change run and matvec_determinism_test stays bitwise).
+
+## Phase 8 (GBNF grammar-constrained decoding)
+
+Grammar masking tests every vocabulary token against the automaton per decode
+step and sets rejected tokens to -inf before the sampler pipeline. Measured on
+qwen2.5-0.5b Q8_0, prompt "Write JSON:\n", temp 1.0, seed 5, engine mask
+single-threaded. tok/s is the two-length delta 200/(wall(216)-wall(16)) so the
+fixed model-load and prefill cancel.
+
+  ./build/release/engine -m qwen2.5-0.5b-q8_0.gguf -p "Write JSON:\n" \
+    --temp 1.0 -s 5 -n {16,216} [--grammar grammars/json.gbnf]
+
+  grammar off   90.09 tok/s
+  grammar on    12.94 tok/s   +66.2 ms/token   6.96x
+
+overhead is the per-step scan of the 151936-token vocabulary. most tokens are
+rejected at their first codepoint. the batch harness (tools/grammar_json_gen)
+splits that scan across the 12 P-cores, holding ~1.5 s/generation including the
+model forward.
+
+### JSON gate: 1000 completions
+
+  ./build/release/tools/grammar_json_gen -m qwen2.5-0.5b-q8_0.gguf \
+    -g grammars/json.gbnf -c 1000 -n 64 --temp 1.0 -p "Return one JSON object:\n"
+  tools/.venv/bin/python -c "json.loads each line"
+
+  1000/1000 parse as valid JSON  (671 completed naturally, 329 closed along the
+  shortest grammar-valid suffix when the 64-token sampling budget ran out).
