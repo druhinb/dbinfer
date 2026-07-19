@@ -31,13 +31,31 @@ void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, 
 // block at a time in the inner loop. in must be a multiple of 32.
 void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
 
-// y = W @ x dispatching on w.type (F32, F16, Q8_0, or Q4_0).
+// same as matvec, but W is Q5_0-packed row-major [out, in], dequantized one
+// block at a time into fp32 scratch. in must be a multiple of 32.
+void matvec_q5_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
+
+// same as matvec, but W is Q4_K-packed row-major [out, in], dequantized one
+// super-block at a time into fp32 scratch. in must be a multiple of 256.
+void matvec_q4_k(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
+
+// same as matvec, but W is Q6_K-packed row-major [out, in], dequantized one
+// super-block at a time into fp32 scratch. in must be a multiple of 256.
+void matvec_q6_k(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
+
+// y = W @ x dispatching on w.type (F32, F16, Q8_0, Q4_0, Q4_K, or Q6_K).
 void matvec_quant(QuantMatrix w, const float *x, float *y, std::size_t out, std::size_t in);
 
 // batched matvec: C = A @ W^T for m rows of A ([m, in]) against the same
 // row-major weight W ([out, in]), writing C as [m, out].
 void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t out,
             std::size_t in);
+
+// batched prefill: C = A @ W^T with W dequantized from w.type once, then one
+// cblas_sgemm call. reduces reordering vs the scalar matmul, so results match
+// only within GEMM tolerance. off Apple this falls back to the scalar path.
+void matmul_accel(const float *A, QuantMatrix w, float *C, std::size_t m, std::size_t out,
+                  std::size_t in);
 
 } // namespace dbinfer::tensor
 

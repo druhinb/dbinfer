@@ -50,17 +50,43 @@ const TensorInfo *find(const GgufFile &f, const std::string &name) {
   return nullptr;
 }
 
-// bytes for one 32-element block of a weight dtype
-std::size_t block_bytes_q32(GgmlType type) {
+struct BlockLayout {
+  std::size_t elems;
+  std::size_t bytes;
+};
+
+// elements and bytes per storage block for a weight dtype. k-quants pack
+// 256-element super-blocks, the legacy formats 32.
+BlockLayout block_layout(GgmlType type) {
   switch (type) {
   case GgmlType::F16:
-    return 64;
+    return {32, 64};
   case GgmlType::Q8_0:
-    return 34;
+    return {32, 34};
   case GgmlType::Q4_0:
-    return 18;
+    return {32, 18};
+  case GgmlType::Q5_0:
+    return {32, 22};
+  case GgmlType::Q4_K:
+    return {256, 144};
+  case GgmlType::Q6_K:
+    return {256, 210};
   default:
-    return 0;
+    return {0, 0};
+  }
+}
+
+bool is_weight_type(GgmlType type) {
+  switch (type) {
+  case GgmlType::F16:
+  case GgmlType::Q8_0:
+  case GgmlType::Q4_0:
+  case GgmlType::Q5_0:
+  case GgmlType::Q4_K:
+  case GgmlType::Q6_K:
+    return true;
+  default:
+    return false;
   }
 }
 
@@ -183,21 +209,24 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
     const TensorInfo *t = find(file, name);
     if (t == nullptr)
       return std::unexpected(Error{name + " missing", "", 0});
-    if (t->type != GgmlType::F16 && t->type != GgmlType::Q8_0 && t->type != GgmlType::Q4_0)
-      return std::unexpected(Error{name + " expected F16, Q8_0, or Q4_0", "", 0});
+    if (!is_weight_type(t->type))
+      return std::unexpected(Error{name + " expected F16, Q8_0, Q4_0, Q5_0, Q4_K, or Q6_K", "", 0});
     if (t->shape[0] != out || t->shape[1] != in)
       return std::unexpected(Error{
           name + " shape mismatch: expected [" + std::to_string(out) + ", " + std::to_string(in) +
               "], found [" + std::to_string(t->shape[0]) + ", " + std::to_string(t->shape[1]) + "]",
           "", t->offset});
-    if (in % tensor::kBlockSize != 0)
-      return std::unexpected(Error{name + " in not a multiple of 32", "", t->offset});
+    const BlockLayout bl = block_layout(t->type);
+    if (in % bl.elems != 0)
+      return std::unexpected(
+          Error{name + " in not a multiple of " + std::to_string(bl.elems), "", t->offset});
     std::size_t elems = 0;
     if (__builtin_mul_overflow(out, in, &elems))
       return std::unexpected(Error{name + " out*in overflow", "", t->offset});
-    if (elems % tensor::kBlockSize != 0)
-      return std::unexpected(Error{name + " out*in not a multiple of 32", "", t->offset});
-    const std::size_t expect = (elems / tensor::kBlockSize) * block_bytes_q32(t->type);
+    if (elems % bl.elems != 0)
+      return std::unexpected(
+          Error{name + " out*in not a multiple of " + std::to_string(bl.elems), "", t->offset});
+    const std::size_t expect = (elems / bl.elems) * bl.bytes;
     if (t->nbytes != expect)
       return std::unexpected(Error{name + " nbytes mismatch: expected " + std::to_string(expect) +
                                        ", found " + std::to_string(t->nbytes),
