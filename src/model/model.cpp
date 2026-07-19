@@ -49,6 +49,18 @@ const TensorInfo *find(const GgufFile &f, const std::string &name) {
   return nullptr;
 }
 
+// bytes for one 32-element block of a weight dtype
+std::size_t block_bytes_q32(GgmlType type) {
+  switch (type) {
+  case GgmlType::F16:
+    return 64;
+  case GgmlType::Q8_0:
+    return 34;
+  default:
+    return 0;
+  }
+}
+
 } // namespace
 
 KVCache::KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_heads,
@@ -164,18 +176,30 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
   const std::size_t hd = cfg.head_dim;
 
   auto weight = [&](const std::string &name, std::size_t out, std::size_t in,
-                    const std::uint16_t *&dst) -> std::optional<std::unexpected<Error>> {
+                    tensor::QuantMatrix &dst) -> std::optional<std::unexpected<Error>> {
     const TensorInfo *t = find(file, name);
     if (t == nullptr)
       return std::unexpected(Error{name + " missing", "", 0});
-    if (t->type != GgmlType::F16)
-      return std::unexpected(Error{name + " expected F16", "", 0});
+    if (t->type != GgmlType::F16 && t->type != GgmlType::Q8_0)
+      return std::unexpected(Error{name + " expected F16 or Q8_0", "", 0});
     if (t->shape[0] != out || t->shape[1] != in)
       return std::unexpected(Error{
           name + " shape mismatch: expected [" + std::to_string(out) + ", " + std::to_string(in) +
               "], found [" + std::to_string(t->shape[0]) + ", " + std::to_string(t->shape[1]) + "]",
           "", t->offset});
-    dst = reinterpret_cast<const std::uint16_t *>(t->data);
+    if (in % tensor::kBlockSize != 0)
+      return std::unexpected(Error{name + " in not a multiple of 32", "", t->offset});
+    std::size_t elems = 0;
+    if (__builtin_mul_overflow(out, in, &elems))
+      return std::unexpected(Error{name + " out*in overflow", "", t->offset});
+    if (elems % tensor::kBlockSize != 0)
+      return std::unexpected(Error{name + " out*in not a multiple of 32", "", t->offset});
+    const std::size_t expect = (elems / tensor::kBlockSize) * block_bytes_q32(t->type);
+    if (t->nbytes != expect)
+      return std::unexpected(Error{name + " nbytes mismatch: expected " + std::to_string(expect) +
+                                       ", found " + std::to_string(t->nbytes),
+                                   "", t->offset});
+    dst = tensor::QuantMatrix{t->data, t->type};
     return std::nullopt;
   };
   auto normw = [&](const std::string &name, std::size_t n,
@@ -209,16 +233,8 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
     return std::nullopt;
   };
 
-  const TensorInfo *embd = find(file, "token_embd.weight");
-  if (embd == nullptr)
-    return fail("token_embd.weight missing");
-  if (embd->type != GgmlType::F16)
-    return fail("token_embd.weight expected F16");
-  if (embd->shape[0] != cfg.vocab_size || embd->shape[1] != dim)
-    return fail("token_embd.weight shape mismatch: expected [" + std::to_string(cfg.vocab_size) +
-                ", " + std::to_string(dim) + "], found [" + std::to_string(embd->shape[0]) + ", " +
-                std::to_string(embd->shape[1]) + "]");
-  m.token_embd_ = reinterpret_cast<const std::uint16_t *>(embd->data);
+  if (auto e = weight("token_embd.weight", cfg.vocab_size, dim, m.token_embd_))
+    return std::move(*e);
 
   if (auto e = normw("output_norm.weight", dim, m.output_norm_))
     return std::move(*e);
@@ -229,11 +245,8 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
     m.lm_head_ = m.token_embd_;
   } else {
     cfg.tied_embeddings = false;
-    if (out_w->type != GgmlType::F16)
-      return fail("output.weight expected F16");
-    if (out_w->shape[0] != cfg.vocab_size || out_w->shape[1] != dim)
-      return fail("output.weight shape mismatch");
-    m.lm_head_ = reinterpret_cast<const std::uint16_t *>(out_w->data);
+    if (auto e = weight("output.weight", cfg.vocab_size, dim, m.lm_head_))
+      return std::move(*e);
   }
   m.cfg_.tied_embeddings = cfg.tied_embeddings;
 
@@ -286,9 +299,7 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
 
 void Model::embed(std::int32_t token, float *out) const {
   const std::size_t dim = cfg_.embedding_length;
-  const std::uint16_t *row = token_embd_ + static_cast<std::size_t>(token) * dim;
-  for (std::size_t i = 0; i < dim; ++i)
-    out[i] = tensor::f16_to_f32(row[i]);
+  tensor::dequant_row(token_embd_, static_cast<std::size_t>(token), dim, out);
 }
 
 void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache &kv,
@@ -301,9 +312,9 @@ void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache 
   const std::size_t gqa = cfg_.gqa_factor;
 
   tensor::rmsnorm(x, L.attn_norm, cfg_.rms_eps, normed_.data(), 1, dim);
-  tensor::matvec_f16(L.attn_q, normed_.data(), q_.data(), nh * hd, dim);
-  tensor::matvec_f16(L.attn_k, normed_.data(), k_.data(), nkv * hd, dim);
-  tensor::matvec_f16(L.attn_v, normed_.data(), v_.data(), nkv * hd, dim);
+  tensor::matvec_quant(L.attn_q, normed_.data(), q_.data(), nh * hd, dim);
+  tensor::matvec_quant(L.attn_k, normed_.data(), k_.data(), nkv * hd, dim);
+  tensor::matvec_quant(L.attn_v, normed_.data(), v_.data(), nkv * hd, dim);
   if (L.attn_q_bias)
     for (std::size_t i = 0; i < nh * hd; ++i)
       q_[i] += L.attn_q_bias[i];
@@ -347,18 +358,18 @@ void Model::decode_layer(std::size_t layer, float *x, std::int32_t pos, KVCache 
         dbg->attn_head0[i] = outh[i];
   }
 
-  tensor::matvec_f16(L.attn_output, attn_.data(), proj_.data(), dim, nh * hd);
+  tensor::matvec_quant(L.attn_output, attn_.data(), proj_.data(), dim, nh * hd);
   for (std::size_t i = 0; i < dim; ++i)
     x[i] += proj_[i];
 
   const std::size_t ff = cfg_.ffn_length;
   tensor::rmsnorm(x, L.ffn_norm, cfg_.rms_eps, normed_.data(), 1, dim);
-  tensor::matvec_f16(L.ffn_gate, normed_.data(), ffn_gate_.data(), ff, dim);
-  tensor::matvec_f16(L.ffn_up, normed_.data(), ffn_up_.data(), ff, dim);
+  tensor::matvec_quant(L.ffn_gate, normed_.data(), ffn_gate_.data(), ff, dim);
+  tensor::matvec_quant(L.ffn_up, normed_.data(), ffn_up_.data(), ff, dim);
   tensor::silu(ffn_gate_.data(), ffn_gate_.data(), ff);
   for (std::size_t i = 0; i < ff; ++i)
     ffn_gate_[i] *= ffn_up_[i];
-  tensor::matvec_f16(L.ffn_down, ffn_gate_.data(), ffn_down_.data(), dim, ff);
+  tensor::matvec_quant(L.ffn_down, ffn_gate_.data(), ffn_down_.data(), dim, ff);
   for (std::size_t i = 0; i < dim; ++i)
     x[i] += ffn_down_[i];
 
@@ -373,7 +384,7 @@ const float *Model::forward(std::int32_t token, std::int32_t pos) {
   for (std::size_t l = 0; l < cfg_.n_layers; ++l)
     decode_layer(l, x_.data(), pos, kv_, nullptr);
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
-  tensor::matvec_f16(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
+  tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();
 }
 

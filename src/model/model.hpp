@@ -2,6 +2,7 @@
 #define DBINFER_MODEL_MODEL_HPP
 
 #include "gguf/gguf.hpp"
+#include "tensor/matmul.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -27,17 +28,17 @@ struct Config {
 
 struct LayerWeights {
   const float *attn_norm = nullptr;
-  const std::uint16_t *attn_q = nullptr;
-  const std::uint16_t *attn_k = nullptr;
-  const std::uint16_t *attn_v = nullptr;
-  const std::uint16_t *attn_output = nullptr;
+  tensor::QuantMatrix attn_q{};
+  tensor::QuantMatrix attn_k{};
+  tensor::QuantMatrix attn_v{};
+  tensor::QuantMatrix attn_output{};
   const float *attn_q_bias = nullptr;
   const float *attn_k_bias = nullptr;
   const float *attn_v_bias = nullptr;
   const float *ffn_norm = nullptr;
-  const std::uint16_t *ffn_gate = nullptr;
-  const std::uint16_t *ffn_up = nullptr;
-  const std::uint16_t *ffn_down = nullptr;
+  tensor::QuantMatrix ffn_gate{};
+  tensor::QuantMatrix ffn_up{};
+  tensor::QuantMatrix ffn_down{};
 };
 
 // dense [layer][pos][kv_head][head_dim] storage for past keys/values, sized
@@ -106,9 +107,9 @@ public:
 private:
   Config cfg_;
   std::vector<LayerWeights> layers_;
-  const std::uint16_t *token_embd_ = nullptr;
+  tensor::QuantMatrix token_embd_{};
   const float *output_norm_ = nullptr;
-  const std::uint16_t *lm_head_ = nullptr;
+  tensor::QuantMatrix lm_head_{};
 
   std::vector<float> x_;
   std::vector<float> normed_;

@@ -1,6 +1,8 @@
 #include "tensor/dequant.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace dbinfer::tensor {
@@ -27,6 +29,41 @@ float f16_to_f32(std::uint16_t h) {
   }
   const float frac = 1.0f + static_cast<float>(mant) * (1.0f / 1024.0f);
   return s * std::ldexp(frac, static_cast<int>(exp) - 15);
+}
+
+void dequant_row_q8_0(const std::byte *block_base, std::size_t in, float *out) {
+  const std::size_t nblocks = in / kBlockSize;
+  for (std::size_t b = 0; b < nblocks; ++b) {
+    const std::byte *blk = block_base + b * sizeof(BlockQ8_0);
+    std::uint16_t d_bits = 0;
+    std::memcpy(&d_bits, blk, sizeof(d_bits));
+    const float d = f16_to_f32(d_bits);
+    for (std::size_t i = 0; i < kBlockSize; ++i)
+      out[b * kBlockSize + i] = d * static_cast<float>(static_cast<std::int8_t>(blk[2 + i]));
+  }
+}
+
+void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out) {
+  switch (w.type) {
+  case gguf::GgmlType::F32: {
+    // tensor data is aligned to the gguf tensor alignment, so a float view is
+    // well-defined here.
+    const float *r = reinterpret_cast<const float *>(w.data) + row * in;
+    std::copy(r, r + in, out);
+    return;
+  }
+  case gguf::GgmlType::F16: {
+    const std::uint16_t *r = reinterpret_cast<const std::uint16_t *>(w.data) + row * in;
+    for (std::size_t i = 0; i < in; ++i)
+      out[i] = f16_to_f32(r[i]);
+    return;
+  }
+  case gguf::GgmlType::Q8_0:
+    dequant_row_q8_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ8_0), in, out);
+    return;
+  default:
+    __builtin_unreachable(); // load validated w.type is one of the above
+  }
 }
 
 } // namespace dbinfer::tensor

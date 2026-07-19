@@ -8,6 +8,7 @@ add_library(dbinfer_tensor STATIC
   tensor/ops.cpp
   tensor/dequant.cpp)
 target_include_directories(dbinfer_tensor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf)
 
 add_library(dbinfer_tokenizer STATIC
   tokenizer/tokenizer.cpp
