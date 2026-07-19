@@ -121,6 +121,20 @@ else()
   message(STATUS "q8_0 gguf or goldens not found — skipping quant_logits_test.")
 endif()
 
+set(SPEC_TARGET "${CMAKE_SOURCE_DIR}/tools/llama.cpp/models/qwen2.5-0.5b.gguf")
+set(SPEC_DRAFT "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q4_0.gguf")
+add_executable(speculative_test speculative_test.cpp)
+target_include_directories(speculative_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(speculative_test PRIVATE dbinfer_model)
+if(EXISTS "${SPEC_TARGET}" AND EXISTS "${SPEC_DRAFT}")
+  target_compile_definitions(speculative_test PRIVATE
+    DBINFER_SPEC_TARGET="${SPEC_TARGET}"
+    DBINFER_SPEC_DRAFT="${SPEC_DRAFT}")
+else()
+  message(STATUS "spec ggufs not found — speculative_test runs merge-logic only.")
+endif()
+add_test(NAME speculative_test COMMAND speculative_test)
+
 set(DET_F16 "${CMAKE_SOURCE_DIR}/tools/llama.cpp/models/qwen2.5-0.5b.gguf")
 set(DET_Q8 "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q8_0.gguf")
 set(DET_Q4 "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q4_0.gguf")
