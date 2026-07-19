@@ -14,6 +14,7 @@ struct CliOptions {
   std::string perplexity_path; // non-empty selects perplexity mode
   int ppl_chunks = 0;          // 0 means all windows
   int n = 128;
+  int threads = 0; // 0 means auto (P-core count)
   bool print_ids = false;
   sample::SamplerParams params;
 };

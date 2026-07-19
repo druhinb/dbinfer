@@ -92,6 +92,14 @@ constexpr FlagSpec kFlags[] = {
        o.n = x;
        return {};
      }},
+    {"--threads", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x <= 0)
+         return std::unexpected(must_be(f, v, "must be > 0"));
+       o.threads = x;
+       return {};
+     }},
     {"--temp", "", true,
      [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
        float x = TRY(parse_float(f, v));
@@ -220,6 +228,7 @@ std::string usage(const char *argv0) {
   s += "  -m <path>               GGUF model file (required)\n";
   s += "  -p <text>               prompt (required)\n";
   s += "  -n <int>                tokens to generate (default 128)\n";
+  s += "  --threads <int>         worker threads, 0 = auto (default auto)\n";
   s += "  --temp <float>          temperature, 0 = greedy (default 0)\n";
   s += "  --top-k <int>           top-k cutoff, 0 = off (default 0)\n";
   s += "  --top-p <float>         top-p nucleus, [0,1] (default 1)\n";
