@@ -36,8 +36,10 @@ if [[ ! -x "$engine" ]]; then
 fi
 
 echo "== oracle (llama.cpp) =="
+# our engine keeps an fp32 kv cache, so pin the oracle to fp32 kv too. its
+# fp16 default flips near-tie tokens the quant math cannot reproduce.
 oracle_text="$("$cli" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 \
-	-no-cnv --no-display-prompt </dev/null 2>/dev/null)"
+	-ctk f32 -ctv f32 -no-cnv --no-display-prompt </dev/null 2>/dev/null)"
 
 echo "== ours (dbinfer) =="
 ours_text="$("$engine" -m "$model" -p "$prompt" -n "$n" --temp 0 -s 0 </dev/null 2>/dev/null)"
