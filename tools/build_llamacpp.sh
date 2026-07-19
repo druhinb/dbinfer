@@ -37,7 +37,9 @@ cmake -S "$sub" -B "$sub/build" \
 	-DLLAMA_CURL=OFF \
 	-DGGML_NATIVE=ON
 cmake --build "$sub/build" -j \
-	--target llama-cli llama-tokenize llama-perplexity llama-bench
+	--target llama-cli llama-tokenize llama-perplexity llama-bench llama-quantize
 
 echo "built oracle binaries into $sub/build/bin"
-ls -1 "$sub/build/bin" | grep -E '^llama-(cli|tokenize|perplexity|bench)$' || true
+for b in llama-cli llama-tokenize llama-perplexity llama-bench llama-quantize; do
+	[[ -x "$sub/build/bin/$b" ]] && echo "  $b"
+done

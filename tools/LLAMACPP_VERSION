@@ -6,4 +6,4 @@ date=2026-07-18
 
 # CPU-only build
 flags=-DCMAKE_BUILD_TYPE=Release -DGGML_METAL=OFF -DLLAMA_CURL=OFF -DGGML_NATIVE=ON
-targets=llama-cli llama-tokenize llama-perplexity llama-bench
+targets=llama-cli llama-tokenize llama-perplexity llama-bench llama-quantize
