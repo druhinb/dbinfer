@@ -73,4 +73,14 @@ std::expected<MappedFile, Error> MappedFile::open(std::string_view path) {
   return MappedFile(addr, size);
 }
 
+std::expected<MappedFile, Error> MappedFile::anonymous(std::size_t size) {
+  if (size == 0)
+    return std::unexpected(Error{"anonymous mapping of zero bytes", "", 0});
+  void *addr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (addr == MAP_FAILED)
+    return std::unexpected(
+        Error{std::string("anonymous mmap failed: ") + std::strerror(errno), "", 0});
+  return MappedFile(addr, size);
+}
+
 } // namespace dbinfer::gguf

@@ -91,17 +91,9 @@ std::string to_string(const Error &err) {
   return err.file + ":" + std::to_string(err.offset) + ": " + err.message;
 }
 
-namespace {
-
-struct TypeTraits {
-  std::uint64_t block_size;
-  std::uint64_t type_size;
-  bool known;
-};
-
 // block_size = elements per stored block, type_size = bytes per block.
 // K-quant sizes (QK_K=256) taken from ggml's block struct layouts.
-TypeTraits ggml_traits(GgmlType t) {
+TypeInfo type_info(GgmlType t) {
   switch (t) {
   case GgmlType::F32:
     return {1, 4, true};
@@ -147,11 +139,13 @@ TypeTraits ggml_traits(GgmlType t) {
   return {0, 0, false};
 }
 
+namespace {
+
 bool meta_type_in_range(std::uint32_t v) {
   return v <= static_cast<std::uint32_t>(MetaType::Float64);
 }
 
-bool ggml_type_known(std::uint32_t v) { return ggml_traits(static_cast<GgmlType>(v)).known; }
+bool ggml_type_known(std::uint32_t v) { return type_info(static_cast<GgmlType>(v)).known; }
 
 std::uint64_t align_up(std::uint64_t x, std::uint64_t a) { return (x + a - 1) / a * a; }
 
@@ -479,7 +473,7 @@ std::expected<std::vector<TensorInfo>, Error> read_tensor_infos(Cursor &c,
             Error{"tensor '" + info.name + "' element count overflows uint64", c.path, type_at});
       }
     }
-    TypeTraits tr = ggml_traits(info.type);
+    TypeInfo tr = type_info(info.type);
     if (nelem % tr.block_size != 0) {
       return std::unexpected(Error{"tensor '" + info.name + "' element count " +
                                        std::to_string(nelem) + " not a multiple of block size " +
