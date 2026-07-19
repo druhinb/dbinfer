@@ -211,6 +211,14 @@ constexpr FlagSpec kFlags[] = {
        o.kv_cache_load = v;
        return {};
      }},
+    {"--prefill-chunk", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x <= 0)
+         return std::unexpected(must_be(f, v, "must be > 0"));
+       o.prefill_chunk = x;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -296,6 +304,7 @@ std::string usage(const char *argv0) {
   s += "  --kv-int8               store keys per-channel and values per-block as int8\n";
   s += "  --kv-cache-save <path>  dump the dense fp32 prefix cache after prefill\n";
   s += "  --kv-cache-load <path>  load a prefix cache and continue from it\n";
+  s += "  --prefill-chunk <int>   prefill tokens per chunk, 1 = per token (default 1)\n";
   return s;
 }
 

@@ -221,12 +221,25 @@ int main(int argc, char **argv) {
     }
   }
 
-  // prefill: run the prompt through the model one token at a time so the KV
-  // cache is populated for every prompt position; only the final token's
-  // logits are kept, to pick the first generated token from. a loaded prefix
-  // already holds positions [0, prefill_start), so decode resumes from there.
-  for (std::size_t i = prefill_start; i < history.size(); ++i)
-    logits = model.forward(history[i], pos++);
+  // prefill: run the prompt through the model so the KV cache is populated for
+  // every prompt position; only the final token's logits are kept, to pick the
+  // first generated token from. a loaded prefix already holds positions
+  // [0, prefill_start), so decode resumes from there. --prefill-chunk > 1
+  // processes fixed-size chunks together on the dense fp32 cache.
+  const std::size_t chunk = static_cast<std::size_t>(opts.prefill_chunk);
+  std::vector<float> chunk_logits;
+  if (chunk > 1 && model.kv_dense_f32()) {
+    chunk_logits.resize(chunk * vocab);
+    for (std::size_t i = prefill_start; i < history.size(); i += chunk) {
+      const std::size_t n = std::min(chunk, history.size() - i);
+      model.forward_chunk(history.data() + i, pos, n, chunk_logits.data());
+      pos += static_cast<std::int32_t>(n);
+      logits = chunk_logits.data() + (n - 1) * vocab;
+    }
+  } else {
+    for (std::size_t i = prefill_start; i < history.size(); ++i)
+      logits = model.forward(history[i], pos++);
+  }
 
   if (!opts.kv_cache_save.empty()) {
     auto saved = model.save_kv_prefix(

@@ -64,6 +64,13 @@ void matvec_quant_fused(const MatvecJob *jobs, std::size_t njobs, const float *x
 void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t out,
             std::size_t in);
 
+// batched projection for a chunk of tokens: C = A @ w^T for the m rows of A,
+// reducing each (row, output) over in through the per-row matvec_quant kernel.
+// every row of C is bitwise identical to matvec_quant(w, A + r * in, ...), so a
+// chunk matches per-token prefill to the bit.
+void matmul_quant(QuantMatrix w, const float *A, float *C, std::size_t m, std::size_t out,
+                  std::size_t in);
+
 // batched prefill: C = A @ W^T with W dequantized from w.type once, then one
 // cblas_sgemm call. reduces reordering vs the scalar matmul, so results match
 // only within GEMM tolerance. off Apple this falls back to the scalar path.

@@ -276,9 +276,8 @@ void matvec_quant(QuantMatrix w, const float *x, float *y, std::size_t out, std:
   ThreadPool &pool = thread_pool();
   // quantize once on the caller thread, then share xq read-only across ranges.
   const BlockQ8_0 *xq = needs_activation_quant(w.type) ? quantize_activation(x, in) : nullptr;
-  parallel_for(pool, out, kRowTile, [&](std::size_t rb, std::size_t re) {
-    matvec_rows(w, x, xq, y, rb, re, in);
-  });
+  parallel_for(pool, out, kRowTile,
+               [&](std::size_t rb, std::size_t re) { matvec_rows(w, x, xq, y, rb, re, in); });
 }
 
 void matvec_quant_fused(const MatvecJob *jobs, std::size_t njobs, const float *x, std::size_t in) {
@@ -325,6 +324,15 @@ void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t
       crow[o] = acc;
     }
   }
+}
+
+void matmul_quant(QuantMatrix w, const float *A, float *C, std::size_t m, std::size_t out,
+                  std::size_t in) {
+  // reuse the per-row kernel unchanged. sharing the weight dequant across rows
+  // lets the compiler contract one reduction to fma and not the other, which
+  // moved the f16 path by ~1e-5. per-row keeps a chunk row bit-identical.
+  for (std::size_t r = 0; r < m; ++r)
+    matvec_quant(w, A + r * in, C + r * out, out, in);
 }
 
 void matmul_accel(const float *A, QuantMatrix w, float *C, std::size_t m, std::size_t out,
