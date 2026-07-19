@@ -43,16 +43,29 @@ struct LayerWeights {
 
 enum class KvDtype { F32, Int8 };
 
+// int8 V quantizes each head_dim slice in blocks of this many elements, one
+// symmetric scale per block. matches the Q8_0 layout, finer than a per-head
+// scale that would lose more to outlier channels.
+inline constexpr std::size_t kKvBlock = 32;
+
+// int8 K in the dense cache uses a per-channel scale shared across a token
+// group of this size. K outliers are channel-consistent, so a per-channel
+// scale keeps a spiking channel from crushing the rest of a token's slice
+// (KIVI). the group bounds the fp32 residual retained to requantize it.
+inline constexpr std::size_t kKvKGroup = 32;
+
 // ring-buffer selection for the KV cache. window == 0 keeps the dense
 // full-context path. window > 0 pins n_sink initial positions and slides a
-// window of the most recent tokens. dtype Int8 is reserved for a later slice.
+// window of the most recent tokens. dtype Int8 stores keys per-channel and
+// values per-block as int8; in the dense path n_sink initial tokens (the
+// attention-sink outliers) stay fp32.
 struct KvPolicy {
   std::size_t n_sink = 0;
   std::size_t window = 0;
   KvDtype dtype = KvDtype::F32;
 };
 
-// dense [layer][slot][kv_head][head_dim] storage for past keys/values, sized
+// [layer][slot][kv_head][head_dim] storage for past keys/values, sized
 // up front for the full context length (or n_sink+window under a ring policy).
 // append() writes one position's worth of k/v for every kv_head of a layer at
 // once (as produced by decode_layer); key()/value() then hand back a pointer
@@ -74,6 +87,25 @@ public:
   const float *key(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
   const float *value(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
 
+  // head_dim int8 slice for a resident slot. valid only when int8() and, for a
+  // key, only when slot >= n_sink_fp32().
+  const std::int8_t *key_i8(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+  const std::int8_t *value_i8(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+
+  // per-channel key scales (head_dim of them) for slot's token group in the
+  // dense cache, or n_blocks() per-block scales in the ring cache. value scales
+  // are n_blocks() per-block. dequantize the matching slice.
+  const float *key_scales(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+  const float *value_scales(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+
+  // fp32 key/value for a retained sink slot. valid only when slot < n_sink_fp32().
+  const float *key_sink(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+  const float *value_sink(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+
+  std::size_t n_blocks() const { return n_blocks_; }
+  std::size_t n_sink_fp32() const { return n_sink_; }
+  bool k_per_channel() const { return k_group_ > 0; }
+  bool int8() const { return policy_.dtype == KvDtype::Int8; }
   bool ring() const { return policy_.window > 0; }
   std::size_t capacity() const { return capacity_; }
   std::size_t n_seen() const { return n_seen_; }
@@ -91,15 +123,32 @@ public:
   std::size_t head_dim() const { return head_dim_; }
 
 private:
+  // requantizes token group g of a layer over its resident non-sink slots,
+  // computing one symmetric scale per channel from the fp32 residual.
+  void requantize_kgroup(std::size_t layer, std::size_t g, std::size_t within);
+
   KvPolicy policy_;
   std::size_t capacity_;
   std::size_t layer_stride_;
   std::size_t pos_stride_;
   std::size_t n_kv_heads_;
   std::size_t head_dim_;
+  std::size_t n_blocks_;
+  std::size_t scale_stride_;
+  std::size_t k_group_ = 0;        // per-channel K token-group size, 0 = ring per-block
+  std::size_t n_kgroups_ = 0;      // K token groups spanning capacity_
+  std::size_t k_scale_stride_ = 0; // per-layer stride into k_scale_
+  std::size_t n_sink_ = 0;         // sink tokens kept fp32 in the dense int8 cache
   std::size_t n_seen_ = 0;
   std::vector<float> k_;
   std::vector<float> v_;
+  std::vector<std::int8_t> k8_;
+  std::vector<std::int8_t> v8_;
+  std::vector<float> k_scale_;
+  std::vector<float> v_scale_;
+  std::vector<float> k_raw_;  // current group's raw K, requantized in place
+  std::vector<float> k_sink_; // fp32 retained sink keys
+  std::vector<float> v_sink_; // fp32 retained sink values
 };
 
 // optional hooks for decode_layer to write out intermediate activations,

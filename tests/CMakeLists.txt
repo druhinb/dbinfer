@@ -17,6 +17,10 @@ add_executable(kv_ring_test kv_ring_test.cpp)
 target_link_libraries(kv_ring_test PRIVATE dbinfer_model)
 add_test(NAME kv_ring_test COMMAND kv_ring_test)
 
+add_executable(kv_int8_test kv_int8_test.cpp)
+target_link_libraries(kv_int8_test PRIVATE dbinfer_model)
+add_test(NAME kv_int8_test COMMAND kv_int8_test)
+
 add_executable(dequant_test dequant_test.cpp)
 target_link_libraries(dequant_test PRIVATE dbinfer_tensor)
 add_test(NAME dequant_test COMMAND dequant_test)

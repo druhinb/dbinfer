@@ -17,6 +17,7 @@ struct CliOptions {
   int threads = 0; // 0 means auto (P-core count)
   int kv_sink = 4;
   int kv_window = 0; // >0 selects the ring-buffer KV cache
+  bool kv_int8 = false;
   bool print_ids = false;
   bool ppl_stream = false;
   sample::SamplerParams params;
