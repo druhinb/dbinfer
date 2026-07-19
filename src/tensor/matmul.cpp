@@ -6,6 +6,7 @@
 #include "tensor/thread_pool.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -44,7 +45,7 @@ void matvec_f16(const std::uint16_t *W, const float *x, float *y, std::size_t ou
     float acc = 0.0f;
     const std::uint16_t *row = W + o * in;
     for (std::size_t i = 0; i < in; ++i)
-      acc += f16_to_f32(row[i]) * x[i];
+      acc = std::fma(f16_to_f32(row[i]), x[i], acc);
     y[o] = acc;
   }
 }
