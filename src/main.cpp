@@ -205,11 +205,38 @@ int main(int argc, char **argv) {
   std::int32_t pos = 0;
   const float *logits = nullptr;
 
-  // prefill: run the whole prompt through the model one token at a time so
-  // the KV cache is populated for every prompt position; only the final
-  // token's logits are kept, to pick the first generated token from.
-  for (std::size_t i = 0; i < history.size(); ++i)
+  std::size_t prefill_start = 0;
+  if (!opts.kv_cache_load.empty()) {
+    auto loaded_prefix = model.load_kv_prefix(opts.kv_cache_load, history);
+    if (!loaded_prefix) {
+      std::fprintf(stderr, "error: kv cache load: %s\n",
+                   dbinfer::gguf::to_string(loaded_prefix.error()).c_str());
+      return 1;
+    }
+    prefill_start = *loaded_prefix;
+    pos = static_cast<std::int32_t>(prefill_start);
+    if (prefill_start >= history.size()) {
+      std::fprintf(stderr, "error: loaded prefix covers the whole prompt; extend the prompt\n");
+      return 1;
+    }
+  }
+
+  // prefill: run the prompt through the model one token at a time so the KV
+  // cache is populated for every prompt position; only the final token's
+  // logits are kept, to pick the first generated token from. a loaded prefix
+  // already holds positions [0, prefill_start), so decode resumes from there.
+  for (std::size_t i = prefill_start; i < history.size(); ++i)
     logits = model.forward(history[i], pos++);
+
+  if (!opts.kv_cache_save.empty()) {
+    auto saved = model.save_kv_prefix(
+        opts.kv_cache_save, std::span<const std::int32_t>(history.data(), history.size()));
+    if (!saved) {
+      std::fprintf(stderr, "error: kv cache save: %s\n",
+                   dbinfer::gguf::to_string(saved.error()).c_str());
+      return 1;
+    }
+  }
 
   // decode: sample one token from the current logits, then feed it back in
   // to get the next position's logits, until eos or the -n budget runs out.
