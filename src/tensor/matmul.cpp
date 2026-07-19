@@ -1,6 +1,8 @@
 #include "tensor/matmul.hpp"
 
+#include "tensor/cpu.hpp"
 #include "tensor/dequant.hpp"
+#include "tensor/matmul_neon.hpp"
 
 #include <array>
 #include <cstring>
@@ -40,8 +42,8 @@ void matvec_f16(const std::uint16_t *W, const float *x, float *y, std::size_t ou
   }
 }
 
-void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
-  const BlockQ8_0 *xq = quantize_activation(x, in);
+void matvec_q8_0_scalar(const std::byte *W, const BlockQ8_0 *xq, float *y, std::size_t out,
+                        std::size_t in) {
   const std::size_t nblocks = in / kBlockSize;
   const std::size_t row_bytes = nblocks * sizeof(BlockQ8_0);
   for (std::size_t o = 0; o < out; ++o) {
@@ -61,8 +63,8 @@ void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, 
   }
 }
 
-void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
-  const BlockQ8_0 *xq = quantize_activation(x, in);
+void matvec_q4_0_scalar(const std::byte *W, const BlockQ8_0 *xq, float *y, std::size_t out,
+                        std::size_t in) {
   const std::size_t nblocks = in / kBlockSize;
   const std::size_t row_bytes = nblocks * sizeof(BlockQ4_0);
   for (std::size_t o = 0; o < out; ++o) {
@@ -83,6 +85,35 @@ void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, 
     }
     y[o] = acc;
   }
+}
+
+namespace {
+
+using QuantDot = void (*)(const std::byte *, const BlockQ8_0 *, float *, std::size_t, std::size_t);
+
+struct QuantDispatch {
+  QuantDot q8;
+  QuantDot q4;
+};
+
+// resolved once from runtime detection; scalar stays the reference fallback.
+const QuantDispatch &quant_dispatch() {
+  static const QuantDispatch d = [] {
+    const CpuFeatures &f = cpu_features();
+    return QuantDispatch{f.dotprod ? matvec_q8_0_sdot : matvec_q8_0_scalar,
+                         f.dotprod ? matvec_q4_0_sdot : matvec_q4_0_scalar};
+  }();
+  return d;
+}
+
+} // namespace
+
+void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
+  quant_dispatch().q8(W, quantize_activation(x, in), y, out, in);
+}
+
+void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
+  quant_dispatch().q4(W, quantize_activation(x, in), y, out, in);
 }
 
 namespace {
