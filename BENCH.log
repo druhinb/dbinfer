@@ -49,3 +49,64 @@ Sanity ceiling: decode tok/s cannot exceed memory_bandwidth / bytes_per_token.
 q8_0 is ~500 MB/token, so an M3 Max at ~400 GB/s caps near 800 tok/s. Our
 15.5 tok/s sits far below the ceiling, confirming decode here is compute-bound,
 not bandwidth-bound.
+
+## Phase 5 — threading (stdlib pool)
+
+Commit: e061c82
+
+stdlib thread pool (std::jthread + condition_variable), no OpenMP. matvec
+parallelized over output rows (row tile 2 keeps i8mm smmla pairs intact),
+attention parallelized over heads. bitwise identical to single-thread on the
+fp32 path (tests/matvec_determinism_test, F16+Q8_0+Q4_0). M3 Max, 12 P-cores.
+
+tools/bench <gguf> 160 96, median of 5. tok/s is per-token so counts differ
+from the 512/256 sections above without affecting the rate.
+
+qwen2.5-0.5b-q8_0.gguf          prefill tok/s   decode tok/s
+  threads 1                        16.98          16.69
+  threads 2                        30.71          30.17
+  threads 3                        42.60          41.77
+  threads 4                        53.19          52.10
+  threads 5                        62.09          61.09
+  threads 6                        68.48          67.41
+  threads 7                        72.99          71.82
+  threads 8                        75.42          74.57
+  threads 9                        77.36          76.27
+  threads 10                       77.79          77.04
+  threads 11                       77.07          76.30
+  threads 12                       74.10          73.28
+
+qwen2.5-0.5b-q4_0.gguf          prefill tok/s   decode tok/s
+  threads 1                        17.60          17.27
+  threads 2                        31.77          31.18
+  threads 3                        44.01          43.08
+  threads 4                        55.03          53.79
+  threads 5                        64.07          63.08
+  threads 6                        70.87          69.44
+  threads 7                        75.44          74.23
+  threads 8                        77.87          76.95
+  threads 9                        79.22          78.08
+  threads 10                       79.45          78.58
+  threads 11                       78.98          77.94
+  threads 12                       76.16          75.02
+
+Speedup vs threads=1 at the peak (threads 10): q8_0 4.58x prefill, 4.62x
+decode; q4_0 4.51x prefill, 4.55x decode. Throughput saturates at threads
+9-10 and dips at 11-12, where the caller plus 11 workers oversubscribe the 12
+P-cores against the OS and background threads.
+
+Perplexity unchanged across thread counts (wiki.test.raw, 512-token windows):
+  q8_0 16 chunks: threads=1 17.763059, threads=12 17.763059
+  q4_0 16 chunks: threads=12 20.658812
+  q4_0  4 chunks: threads=1 15.032068, threads=12 15.032068
+  q8_0  4 chunks: threads=1 13.382441, threads=12 13.382441
+The single-thread q4_0 16-chunk run is elided for runtime; the 4-chunk pair
+and the bitwise determinism test cover the equality claim.
+
+### ThreadSanitizer
+
+build/tsan preset (-fsanitize=thread, cannot combine with ASan). thread_pool_test
+and model_test ran with no data-race reports. model_test drives the auto-threaded
+decode_layer and matvec_quant path against the goldens (embedding, attention,
+layer output, logits). matvec_determinism_test is elided under TSan for runtime;
+model_test covers the same threaded kernels in seconds.
