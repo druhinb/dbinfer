@@ -1,5 +1,9 @@
 #include "args.hpp"
+#include "backend/backend.hpp"
 #include "dbmf/dbmf.hpp"
+#ifdef DBINFER_METAL
+#include "backend/metal_backend.hpp"
+#endif
 #include "gguf/gguf.hpp"
 #include "grammar/grammar.hpp"
 #include "model/model.hpp"
@@ -261,6 +265,33 @@ int main(int argc, char **argv) {
     model.configure_kv(
         {static_cast<std::size_t>(opts.kv_sink), static_cast<std::size_t>(opts.kv_window),
          opts.kv_int8 ? dbinfer::model::KvDtype::Int8 : dbinfer::model::KvDtype::F32});
+
+  int gpu_layers = opts.gpu_layers;
+  if (gpu_layers < 0) {
+    const char *env = std::getenv("DBINFER_GPU_LAYERS");
+    gpu_layers = env != nullptr ? std::atoi(env) : 0;
+  }
+  if (gpu_layers > 0) {
+    dbinfer::backend::Backend *be = nullptr;
+#ifdef DBINFER_METAL
+    be = dbinfer::backend::metal_backend();
+#endif
+    if (be == nullptr) {
+      std::fprintf(stderr, "error: --gpu-layers needs a Metal device\n");
+      return 1;
+    }
+    if (opts.kv_window > 0 || opts.kv_int8) {
+      std::fprintf(stderr, "error: --gpu-layers requires the dense fp32 cache\n");
+      return 1;
+    }
+    const std::size_t n =
+        std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), model.config().n_layers);
+    if (!model.layers_f16(n)) {
+      std::fprintf(stderr, "error: --gpu-layers requires an F16 model\n");
+      return 1;
+    }
+    model.set_gpu_offload(be, n);
+  }
 
   if (!opts.perplexity_path.empty())
     return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
