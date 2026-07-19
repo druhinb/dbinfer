@@ -3,6 +3,13 @@ add_library(dbinfer_gguf STATIC
   gguf/mmap_file.cpp)
 target_include_directories(dbinfer_gguf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+add_library(dbinfer_dbmf STATIC
+  dbmf/dbmf.cpp
+  dbmf/xxhash.cpp
+  dbmf/huffman.cpp)
+target_include_directories(dbinfer_dbmf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dbinfer_dbmf PUBLIC dbinfer_gguf)
+
 find_package(Threads REQUIRED)
 
 add_library(dbinfer_tensor STATIC
@@ -54,5 +61,5 @@ target_include_directories(dbinfer_args PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dbinfer_args PUBLIC dbinfer_sample)
 
 add_executable(engine main.cpp)
-target_link_libraries(engine PRIVATE dbinfer_model dbinfer_args dbinfer_grammar)
+target_link_libraries(engine PRIVATE dbinfer_model dbinfer_args dbinfer_grammar dbinfer_dbmf)
 set_target_properties(engine PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
