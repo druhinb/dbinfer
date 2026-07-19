@@ -4,8 +4,21 @@
 
 #include <array>
 #include <cstring>
+#include <vector>
 
 namespace dbinfer::tensor {
+
+namespace {
+
+// activations quantize once per matvec, reused across every output row.
+const BlockQ8_0 *quantize_activation(const float *x, std::size_t in) {
+  thread_local std::vector<BlockQ8_0> scratch;
+  scratch.resize(in / kBlockSize);
+  quantize_row_q8_0(x, in, reinterpret_cast<std::byte *>(scratch.data()));
+  return scratch.data();
+}
+
+} // namespace
 
 void matvec(const float *W, const float *x, float *y, std::size_t out, std::size_t in) {
   for (std::size_t o = 0; o < out; ++o) {
@@ -28,6 +41,7 @@ void matvec_f16(const std::uint16_t *W, const float *x, float *y, std::size_t ou
 }
 
 void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
+  const BlockQ8_0 *xq = quantize_activation(x, in);
   const std::size_t nblocks = in / kBlockSize;
   const std::size_t row_bytes = nblocks * sizeof(BlockQ8_0);
   for (std::size_t o = 0; o < out; ++o) {
@@ -35,18 +49,20 @@ void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, 
     float acc = 0.0f;
     for (std::size_t b = 0; b < nblocks; ++b) {
       const std::byte *blk = row + b * sizeof(BlockQ8_0);
-      std::uint16_t d_bits = 0;
-      std::memcpy(&d_bits, blk, sizeof(d_bits));
-      const float d = f16_to_f32(d_bits);
-      const float *xb = x + b * kBlockSize;
+      std::uint16_t dw_bits = 0;
+      std::memcpy(&dw_bits, blk, sizeof(dw_bits));
+      std::int32_t sumi = 0;
       for (std::size_t i = 0; i < kBlockSize; ++i)
-        acc += d * static_cast<float>(static_cast<std::int8_t>(blk[2 + i])) * xb[i];
+        sumi += static_cast<std::int32_t>(static_cast<std::int8_t>(blk[2 + i])) *
+                static_cast<std::int32_t>(xq[b].qs[i]);
+      acc += f16_to_f32(dw_bits) * f16_to_f32(xq[b].d) * static_cast<float>(sumi);
     }
     y[o] = acc;
   }
 }
 
 void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
+  const BlockQ8_0 *xq = quantize_activation(x, in);
   const std::size_t nblocks = in / kBlockSize;
   const std::size_t row_bytes = nblocks * sizeof(BlockQ4_0);
   for (std::size_t o = 0; o < out; ++o) {
@@ -54,15 +70,16 @@ void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, 
     float acc = 0.0f;
     for (std::size_t b = 0; b < nblocks; ++b) {
       const std::byte *blk = row + b * sizeof(BlockQ4_0);
-      std::uint16_t d_bits = 0;
-      std::memcpy(&d_bits, blk, sizeof(d_bits));
-      const float d = f16_to_f32(d_bits);
-      const float *xb = x + b * kBlockSize;
+      std::uint16_t dw_bits = 0;
+      std::memcpy(&dw_bits, blk, sizeof(dw_bits));
+      const std::int8_t *qx = xq[b].qs;
+      std::int32_t sumi = 0;
       for (std::size_t j = 0; j < 16; ++j) {
         const std::uint8_t q = static_cast<std::uint8_t>(blk[2 + j]);
-        acc += d * (static_cast<float>(q & 0x0Fu) - 8.0f) * xb[j];
-        acc += d * (static_cast<float>(q >> 4) - 8.0f) * xb[j + 16];
+        sumi += (static_cast<std::int32_t>(q & 0x0Fu) - 8) * static_cast<std::int32_t>(qx[j]);
+        sumi += (static_cast<std::int32_t>(q >> 4) - 8) * static_cast<std::int32_t>(qx[j + 16]);
       }
+      acc += f16_to_f32(dw_bits) * f16_to_f32(xq[b].d) * static_cast<float>(sumi);
     }
     y[o] = acc;
   }
