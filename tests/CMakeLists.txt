@@ -41,6 +41,12 @@ add_executable(thread_pool_test thread_pool_test.cpp)
 target_link_libraries(thread_pool_test PRIVATE dbinfer_tensor)
 add_test(NAME thread_pool_test COMMAND thread_pool_test)
 
+if(DBINFER_METAL)
+  add_executable(metal_matmul_test metal_matmul_test.cpp)
+  target_link_libraries(metal_matmul_test PRIVATE dbinfer_tensor dbinfer_backend)
+  add_test(NAME metal_matmul_test COMMAND metal_matmul_test)
+endif()
+
 add_executable(sample_test sample_test.cpp)
 target_link_libraries(sample_test PRIVATE dbinfer_sample)
 add_test(NAME sample_test COMMAND sample_test)

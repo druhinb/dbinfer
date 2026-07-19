@@ -12,6 +12,23 @@ target_link_libraries(dbinfer_dbmf PUBLIC dbinfer_gguf)
 
 find_package(Threads REQUIRED)
 
+add_library(dbinfer_backend STATIC
+  backend/backend.cpp)
+target_include_directories(dbinfer_backend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dbinfer_backend PUBLIC dbinfer_gguf)
+
+# the Metal kernel lives in an Objective-C++ .mm behind a plain C++ header. it
+# compiles the mul_mat shader from source at runtime, so no metallib toolchain.
+if(DBINFER_METAL)
+  find_library(METAL_LIBRARY Metal REQUIRED)
+  find_library(FOUNDATION_LIBRARY Foundation REQUIRED)
+  target_sources(dbinfer_backend PRIVATE backend/metal_backend.mm)
+  set_source_files_properties(backend/metal_backend.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  target_compile_definitions(dbinfer_backend PUBLIC DBINFER_METAL)
+  target_link_libraries(dbinfer_backend PUBLIC ${METAL_LIBRARY} ${FOUNDATION_LIBRARY})
+endif()
+
 add_library(dbinfer_tensor STATIC
   tensor/matmul.cpp
   tensor/matmul_neon.cpp
@@ -20,7 +37,7 @@ add_library(dbinfer_tensor STATIC
   tensor/dequant.cpp
   tensor/thread_pool.cpp)
 target_include_directories(dbinfer_tensor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf Threads::Threads)
+target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf dbinfer_backend Threads::Threads)
 
 # sdot/i8mm intrinsics need armv8.2 features; guarded behind runtime detection.
 set_source_files_properties(tensor/matmul_neon.cpp
