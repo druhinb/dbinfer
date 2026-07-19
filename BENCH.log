@@ -1,0 +1,51 @@
+# BENCH.log
+
+Throughput log per docs/VERIFICATION.md. Our numbers are tokens/sec for
+prefill (512-token prompt) and decode (256 generated), median of 5 runs,
+machine plugged in. Measure with tools/bench; force a kernel with
+DBINFER_QUANT_KERNEL={scalar,sdot,i8mm}.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+FEAT_DotProd=1, FEAT_I8MM=1.
+
+## Phase 4 (NEON int8 matvec) — commit c18ff63
+
+Single-threaded. Weights read from the mmap; activations quantized to Q8_0 per
+matvec. before = scalar int8-dot reference; after = i8mm (the resolved default
+on this host). sdot is the intermediate SIMD step.
+
+qwen2.5-0.5b-q8_0.gguf                prefill tok/s   decode tok/s
+  scalar (before)                        13.13          12.60
+  sdot                                   13.11          12.59
+  i8mm   (after, default)                16.33          15.54
+
+qwen2.5-0.5b-q4_0.gguf                prefill tok/s   decode tok/s
+  scalar (before)                        12.81          12.33
+  sdot                                   13.33          12.81
+  i8mm   (after, default)                17.16          16.29
+
+i8mm vs sdot at m=1: i8mm wins (+23% q8 decode, +27% q4 decode). sdot ties the
+scalar reference because clang already vectorizes the int8 loop. m=1 decode is
+compute-bound at this model size, so i8mm's 2-row smmla tile helps. i8mm is the
+resolved default; sdot and scalar remain for hosts without FEAT_I8MM and as the
+1e-6 property-test reference.
+
+Kernel microbench, hot weights, one [out=4864 in=896] matvec, m=1, calls/s:
+  q8 scalar 1568   sdot 1563   i8mm 2063
+  q4 scalar 1479   sdot 1561   i8mm 2065
+
+## External baseline — llama-bench (build 0bb291933)
+
+tools/llama.cpp/build/bin/llama-bench -m <gguf> -ngl 0 -t 12
+
+  qwen2.5-0.5b-q8_0   pp512 1413.22 t/s   tg128 173.52 t/s
+  qwen2.5-0.5b-q4_0   pp512 1400.03 t/s   tg128 227.77 t/s
+
+llama-bench runs 12 threads with an Accelerate BLAS prefill path. This engine
+is single-threaded here (threading is Phase 5, an Accelerate prefill path is
+Phase 6), so the gap is expected and closes in those phases.
+
+Sanity ceiling: decode tok/s cannot exceed memory_bandwidth / bytes_per_token.
+q8_0 is ~500 MB/token, so an M3 Max at ~400 GB/s caps near 800 tok/s. Our
+15.5 tok/s sits far below the ceiling, confirming decode here is compute-bound,
+not bandwidth-bound.
