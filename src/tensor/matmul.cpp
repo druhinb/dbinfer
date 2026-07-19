@@ -44,6 +44,8 @@ void matvec_f16(const std::uint16_t *W, const float *x, float *y, std::size_t ou
   for (std::size_t o = 0; o < out; ++o) {
     float acc = 0.0f;
     const std::uint16_t *row = W + o * in;
+    // explicit fma pins the contraction so the batched matmul_quant path stays
+    // bit-identical regardless of the compiler's ffp-contract choice.
     for (std::size_t i = 0; i < in; ++i)
       acc = std::fma(f16_to_f32(row[i]), x[i], acc);
     y[o] = acc;
@@ -327,11 +329,47 @@ void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t
   }
 }
 
+namespace {
+
+// C = A @ W^T for f16 W [out, in] and A [m, in], one output row at a time.
+// each weight element is dequantized once and accumulated into every one of the
+// m token rows, so W is read from the mmap once for the whole batch. the inner
+// reduction over `in` stays sequential and uses the same explicit fma as
+// matvec_f16, so C[r,o] is bit-identical to the per-row kernel.
+void matmul_f16_rows(const std::uint16_t *W, const float *A, float *C, std::size_t m,
+                     std::size_t lo, std::size_t hi, std::size_t out, std::size_t in) {
+  thread_local std::vector<float> acc;
+  acc.resize(m);
+  for (std::size_t o = lo; o < hi; ++o) {
+    std::fill(acc.begin(), acc.end(), 0.0f);
+    const std::uint16_t *row = W + o * in;
+    for (std::size_t i = 0; i < in; ++i) {
+      const float w = f16_to_f32(row[i]);
+      for (std::size_t r = 0; r < m; ++r)
+        acc[r] = std::fma(w, A[r * in + i], acc[r]);
+    }
+    for (std::size_t r = 0; r < m; ++r)
+      C[r * out + o] = acc[r];
+  }
+}
+
+void matmul_f16_batched(const std::uint16_t *W, const float *A, float *C, std::size_t m,
+                        std::size_t out, std::size_t in) {
+  parallel_for(thread_pool(), out, 1, [&](std::size_t lo, std::size_t hi) {
+    matmul_f16_rows(W, A, C, m, lo, hi, out, in);
+  });
+}
+
+} // namespace
+
 void matmul_quant(QuantMatrix w, const float *A, float *C, std::size_t m, std::size_t out,
                   std::size_t in) {
-  // reuse the per-row kernel unchanged. sharing the weight dequant across rows
-  // lets the compiler contract one reduction to fma and not the other, which
-  // moved the f16 path by ~1e-5. per-row keeps a chunk row bit-identical.
+  // f16 shares one weight read across all m rows, bit-identical to per-row.
+  if (w.type == gguf::GgmlType::F16) {
+    matmul_f16_batched(reinterpret_cast<const std::uint16_t *>(w.data), A, C, m, out, in);
+    return;
+  }
+  // other dtypes keep the per-row kernel so a chunk row stays bit-identical.
   for (std::size_t r = 0; r < m; ++r)
     matvec_quant(w, A + r * in, C + r * out, out, in);
 }

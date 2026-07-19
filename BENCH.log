@@ -235,16 +235,19 @@ Token-identical gate (--print-ids, greedy, diff vs spec off), n 64:
   prompt "Once upon a time in a distant land" k=8 IDENTICAL  rate 0.3487
 
 Wall clock, prompt "Once upon a time in a distant land", 12 P-cores, decode
-delta 128/(wall(144)-wall(16)) so model load and prefill cancel:
+delta 128/(wall(144)-wall(16)) so model load and prefill cancel, median of 3:
 
-  spec off        8.65 tok/s
-  spec on k=4     4.80 tok/s   0.55x
+  spec off        8.54 tok/s
+  spec on k=4     9.62 tok/s   1.13x
 
-Speedup is below 1x, expected and honest: this engine has no fused batched
-matmul that shares the weight read across the k verify rows. The bit-identical
-forward_chunk reuses the per-row matvec, so the target's k+1-row verify costs
-about k+1 sequential forwards, and each round also runs k draft forwards. A
-fused batched matmul would amortize the weight read but break bit-identity via
-FMA contraction (Phase 7), losing the token-identical gate. The value here is
-the exact-output verification path and the measured acceptance rate, not a
-positive wall-clock speedup on this memory-bound single-request engine.
+  (prior fused-free number was spec on k=4 4.80 tok/s, 0.55x.)
+
+matmul_quant now runs a fused batched f16 kernel on the verify path: each
+weight element is dequantized once and accumulated into all k+1 token rows, so
+the target weights are read from the mmap once per round instead of k+1 times.
+The reduction over `in` stays sequential and uses explicit std::fma, matched by
+the same std::fma in the per-row matvec_f16, so every verify logit is
+bit-identical to per-token decode (chunked_prefill_test, matvec_determinism_test)
+and the greedy stream stays token-identical to spec-off (--print-ids diff,
+k=4 and k=8, both prompts IDENTICAL). Speedup is now above 1x because the
+verify projections are no longer weight-bandwidth-bound on the k+1 rows.
