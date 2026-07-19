@@ -41,28 +41,63 @@ struct LayerWeights {
   tensor::QuantMatrix ffn_down{};
 };
 
-// dense [layer][pos][kv_head][head_dim] storage for past keys/values, sized
-// up front for the full context length. append() writes one position's worth
-// of k/v for every kv_head of a layer at once (as produced by decode_layer);
-// key()/value() then hand back a pointer to one kv_head's slice for the
-// attention dot products. Callers own bounds checking on layer/pos/kv_head.
+enum class KvDtype { F32, Int8 };
+
+// ring-buffer selection for the KV cache. window == 0 keeps the dense
+// full-context path. window > 0 pins n_sink initial positions and slides a
+// window of the most recent tokens. dtype Int8 is reserved for a later slice.
+struct KvPolicy {
+  std::size_t n_sink = 0;
+  std::size_t window = 0;
+  KvDtype dtype = KvDtype::F32;
+};
+
+// dense [layer][slot][kv_head][head_dim] storage for past keys/values, sized
+// up front for the full context length (or n_sink+window under a ring policy).
+// append() writes one position's worth of k/v for every kv_head of a layer at
+// once (as produced by decode_layer); key()/value() then hand back a pointer
+// to one kv_head's slice indexed by slot for the attention dot products.
+// Callers own bounds checking on layer/slot/kv_head.
 class KVCache {
 public:
-  KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_heads, std::size_t head_dim);
+  // buffer slot of a resident key with its cache-relative rope position.
+  struct Resident {
+    std::size_t slot;
+    std::int32_t rope_pos;
+  };
+
+  KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_heads, std::size_t head_dim,
+          KvPolicy policy = {});
 
   void append(std::size_t layer, std::size_t pos, const float *k, const float *v);
 
-  const float *key(std::size_t layer, std::size_t pos, std::size_t kv_head) const;
-  const float *value(std::size_t layer, std::size_t pos, std::size_t kv_head) const;
+  const float *key(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+  const float *value(std::size_t layer, std::size_t slot, std::size_t kv_head) const;
+
+  bool ring() const { return policy_.window > 0; }
+  std::size_t capacity() const { return capacity_; }
+  std::size_t n_seen() const { return n_seen_; }
+  const KvPolicy &policy() const { return policy_; }
+  void reset() { n_seen_ = 0; }
+
+  // maps absolute token position to its ring slot. valid only under ring().
+  std::size_t slot_for(std::size_t pos) const;
+
+  // fills out (>= capacity_ entries) with the resident (slot, rope_pos) list,
+  // sinks first then window tokens oldest to newest, returns the count.
+  std::size_t residents(Resident *out) const;
 
   std::size_t n_kv_heads() const { return n_kv_heads_; }
   std::size_t head_dim() const { return head_dim_; }
 
 private:
+  KvPolicy policy_;
+  std::size_t capacity_;
   std::size_t layer_stride_;
   std::size_t pos_stride_;
   std::size_t n_kv_heads_;
   std::size_t head_dim_;
+  std::size_t n_seen_ = 0;
   std::vector<float> k_;
   std::vector<float> v_;
 };
@@ -106,6 +141,13 @@ public:
   // cache slots it reuses.
   const float *forward(std::int32_t token, std::int32_t pos);
 
+  // rebuilds the KV cache under policy and resizes the score/resident scratch.
+  // window > 0 selects the ring path; window == 0 restores the dense default.
+  void configure_kv(KvPolicy policy);
+
+  // clears the resident count so the next token starts a fresh stream.
+  void reset_kv() { kv_.reset(); }
+
 private:
   Config cfg_;
   std::vector<LayerWeights> layers_;
@@ -125,6 +167,7 @@ private:
   std::vector<float> ffn_up_;
   std::vector<float> ffn_down_;
   std::vector<float> logits_;
+  std::vector<KVCache::Resident> resident_;
   KVCache kv_{0, 0, 0, 0};
 };
 

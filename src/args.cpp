@@ -175,6 +175,27 @@ constexpr FlagSpec kFlags[] = {
        o.ppl_chunks = x;
        return {};
      }},
+    {"--kv-window", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x < 0)
+         return std::unexpected(must_be(f, v, "must be >= 0"));
+       o.kv_window = x;
+       return {};
+     }},
+    {"--kv-sink", "", true,
+     [](CliOptions &o, std::string_view f, const char *v) -> std::expected<void, sample::Error> {
+       int x = TRY(parse_int(f, v));
+       if (x < 0)
+         return std::unexpected(must_be(f, v, "must be >= 0"));
+       o.kv_sink = x;
+       return {};
+     }},
+    {"--ppl-stream", "", false,
+     [](CliOptions &o, std::string_view, const char *) -> std::expected<void, sample::Error> {
+       o.ppl_stream = true;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -215,6 +236,11 @@ std::expected<CliOptions, sample::Error> parse_args(int argc, const char *const 
   if (opts.perplexity_path.empty() && opts.prompt.empty())
     return std::unexpected(sample::Error{"-p <prompt> is required"});
 
+  // dense pos runs past context_length and overruns the fixed cache. the
+  // stream gate needs the ring anyway.
+  if (opts.ppl_stream && opts.kv_window <= 0)
+    return std::unexpected(sample::Error{"--ppl-stream requires --kv-window > 0"});
+
   if (auto ok = sample::validate(opts.params); !ok)
     return std::unexpected(ok.error());
 
@@ -241,6 +267,9 @@ std::string usage(const char *argv0) {
   s += "  --print-ids             print token ids instead of text\n";
   s += "  --perplexity <path>     score perplexity over a text file (no -p)\n";
   s += "  --ppl-chunks <int>      limit perplexity to N windows (default all)\n";
+  s += "  --ppl-stream            stream one continuous context, bucket by position\n";
+  s += "  --kv-window <int>       ring-buffer window, 0 = dense cache (default 0)\n";
+  s += "  --kv-sink <int>         pinned attention sink positions (default 4)\n";
   return s;
 }
 
