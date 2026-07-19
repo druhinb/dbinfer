@@ -12,6 +12,10 @@ namespace dbinfer::tensor {
 // zero, subnormals, infinities, and NaN).
 float f16_to_f32(std::uint16_t h);
 
+// inverse of f16_to_f32: rounds a float32 to binary16 bits, round to nearest
+// even, subnormals preserved, out-of-range magnitude to infinity.
+std::uint16_t f32_to_f16(float f);
+
 constexpr std::size_t kBlockSize = 32;
 
 // ggml Q8_0 block: fp16 scale d then 32 int8 quants. the 34-byte stride
@@ -25,6 +29,10 @@ static_assert(sizeof(BlockQ8_0) == 34);
 // dequantizes in values of one Q8_0 row (in/32 blocks from block_base) into
 // out: out[i] = f16_to_f32(d) * qs[i]. in must be a multiple of 32.
 void dequant_row_q8_0(const std::byte *block_base, std::size_t in, float *out);
+
+// quantizes n activations into n/32 Q8_0 blocks at out. n must be a multiple
+// of 32. block d is stored fp16 so the vec dot scale matches ggml at parity.
+void quantize_row_q8_0(const float *x, std::size_t n, std::byte *out);
 
 // ggml Q4_0 block: fp16 scale d then 32 4-bit quants packed two per byte. the
 // 18-byte stride leaves d unaligned in the mmap, so never load through a view.

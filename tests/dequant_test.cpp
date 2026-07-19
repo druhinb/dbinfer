@@ -32,6 +32,15 @@ void check_le(const char *what, float got, float bound) {
   }
 }
 
+void check_u16(const char *what, std::uint16_t got, std::uint16_t want) {
+  if (got == want) {
+    std::printf("PASS %-24s 0x%04X\n", what, got);
+  } else {
+    std::printf("FAIL %-24s got 0x%04X want 0x%04X\n", what, got, want);
+    ++g_failures;
+  }
+}
+
 bool signbit_of(float v) { return std::signbit(v); }
 
 } // namespace
@@ -190,6 +199,56 @@ int main() {
     for (int i = 0; i < 32; ++i)
       max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
     check_le("q4_0 roundtrip", max_err, d + 1e-6f);
+  }
+
+  using dbinfer::tensor::f32_to_f16;
+
+  check_u16("f32->f16 +0", f32_to_f16(0.0f), 0x0000);
+  check_u16("f32->f16 -0", f32_to_f16(-0.0f), 0x8000);
+  check_u16("f32->f16 1.0", f32_to_f16(1.0f), 0x3C00);
+  check_u16("f32->f16 -2.0", f32_to_f16(-2.0f), 0xC000);
+  check_u16("f32->f16 65504", f32_to_f16(65504.0f), 0x7BFF);
+  check_u16("f32->f16 overflow", f32_to_f16(70000.0f), 0x7C00);
+  check_u16("f32->f16 2^-24", f32_to_f16(std::ldexp(1.0f, -24)), 0x0001);
+  // 1 + 3/2048 sits halfway between mant 1 and mant 2, even wins.
+  check_u16("f32->f16 tie even", f32_to_f16(1.00146484375f), 0x3C02);
+  // 1 + 1/2048 sits halfway between mant 0 and mant 1, even wins.
+  check_u16("f32->f16 tie down", f32_to_f16(1.00048828125f), 0x3C00);
+
+  for (std::uint16_t bits : {std::uint16_t(0x0000), std::uint16_t(0x8000), std::uint16_t(0x3C00),
+                             std::uint16_t(0xC000), std::uint16_t(0x0001), std::uint16_t(0x7BFF),
+                             std::uint16_t(0x2C00), std::uint16_t(0x3800)}) {
+    char name[32];
+    std::snprintf(name, sizeof name, "f16 roundtrip 0x%04X", bits);
+    check_u16(name, f32_to_f16(f16_to_f32(bits)), bits);
+  }
+
+  using dbinfer::tensor::quantize_row_q8_0;
+
+  {
+    float xs[32];
+    for (int i = 0; i < 32; ++i)
+      xs[i] = static_cast<float>(i - 16) * 0.5f;
+    xs[0] = 300.0f; // amax makes d well above one, forces clamp on the rest.
+    float amax = 0.0f;
+    for (float v : xs)
+      amax = std::max(amax, std::fabs(v));
+    std::byte block[34];
+    quantize_row_q8_0(xs, 32, block);
+    std::uint16_t d_bits = 0;
+    std::memcpy(&d_bits, block, sizeof(d_bits));
+    check_u16("q8 quant d fp16", d_bits, f32_to_f16(amax / 127.0f));
+    check_eq("q8 quant amax->127", static_cast<float>(static_cast<std::int8_t>(block[2])), 127.0f);
+  }
+
+  {
+    float xs[32];
+    for (int i = 0; i < 32; ++i)
+      xs[i] = -1.0f;
+    xs[5] = 1.0f;
+    std::byte block[34];
+    quantize_row_q8_0(xs, 32, block);
+    check_eq("q8 quant -clamp", static_cast<float>(static_cast<std::int8_t>(block[2])), -127.0f);
   }
 
   std::printf("---\n%d checks failed\n", g_failures);
