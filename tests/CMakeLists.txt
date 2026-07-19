@@ -25,6 +25,10 @@ add_executable(simd_matvec_test simd_matvec_test.cpp)
 target_link_libraries(simd_matvec_test PRIVATE dbinfer_tensor)
 add_test(NAME simd_matvec_test COMMAND simd_matvec_test)
 
+add_executable(thread_pool_test thread_pool_test.cpp)
+target_link_libraries(thread_pool_test PRIVATE dbinfer_tensor)
+add_test(NAME thread_pool_test COMMAND thread_pool_test)
+
 add_executable(sample_test sample_test.cpp)
 target_link_libraries(sample_test PRIVATE dbinfer_sample)
 add_test(NAME sample_test COMMAND sample_test)

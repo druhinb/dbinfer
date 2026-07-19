@@ -26,6 +26,17 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "DBINFER_SANITIZE": "ON"
       }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Debug + TSan",
+      "description": "ThreadSanitizer build for the thread pool. Cannot combine with ASan.",
+      "binaryDir": "${sourceDir}/build/tsan",
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DBINFER_TSAN": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -36,6 +47,10 @@
     {
       "name": "asan",
       "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
     }
   ],
   "testPresets": [
@@ -49,6 +64,13 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
       "output": {
         "outputOnFailure": true
       }

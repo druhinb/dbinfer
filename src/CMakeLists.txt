@@ -3,14 +3,17 @@ add_library(dbinfer_gguf STATIC
   gguf/mmap_file.cpp)
 target_include_directories(dbinfer_gguf PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+find_package(Threads REQUIRED)
+
 add_library(dbinfer_tensor STATIC
   tensor/matmul.cpp
   tensor/matmul_neon.cpp
   tensor/cpu.cpp
   tensor/ops.cpp
-  tensor/dequant.cpp)
+  tensor/dequant.cpp
+  tensor/thread_pool.cpp)
 target_include_directories(dbinfer_tensor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf)
+target_link_libraries(dbinfer_tensor PUBLIC dbinfer_gguf Threads::Threads)
 
 # sdot/i8mm intrinsics need armv8.2 features; guarded behind runtime detection.
 set_source_files_properties(tensor/matmul_neon.cpp
