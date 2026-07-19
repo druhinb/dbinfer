@@ -56,6 +56,8 @@ std::size_t block_bytes_q32(GgmlType type) {
     return 64;
   case GgmlType::Q8_0:
     return 34;
+  case GgmlType::Q4_0:
+    return 18;
   default:
     return 0;
   }
@@ -180,8 +182,8 @@ std::expected<Model, Error> Model::load(const GgufFile &file) {
     const TensorInfo *t = find(file, name);
     if (t == nullptr)
       return std::unexpected(Error{name + " missing", "", 0});
-    if (t->type != GgmlType::F16 && t->type != GgmlType::Q8_0)
-      return std::unexpected(Error{name + " expected F16 or Q8_0", "", 0});
+    if (t->type != GgmlType::F16 && t->type != GgmlType::Q8_0 && t->type != GgmlType::Q4_0)
+      return std::unexpected(Error{name + " expected F16, Q8_0, or Q4_0", "", 0});
     if (t->shape[0] != out || t->shape[1] != in)
       return std::unexpected(Error{
           name + " shape mismatch: expected [" + std::to_string(out) + ", " + std::to_string(in) +

@@ -27,7 +27,11 @@ struct QuantMatrix {
 // block at a time in the inner loop. in must be a multiple of 32.
 void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
 
-// y = W @ x dispatching on w.type (F32, F16, or Q8_0).
+// same as matvec, but W is Q4_0-packed row-major [out, in], dequantized one
+// block at a time in the inner loop. in must be a multiple of 32.
+void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in);
+
+// y = W @ x dispatching on w.type (F32, F16, Q8_0, or Q4_0).
 void matvec_quant(QuantMatrix w, const float *x, float *y, std::size_t out, std::size_t in);
 
 // batched matvec: C = A @ W^T for m rows of A ([m, in]) against the same

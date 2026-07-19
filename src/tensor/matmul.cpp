@@ -46,6 +46,28 @@ void matvec_q8_0(const std::byte *W, const float *x, float *y, std::size_t out, 
   }
 }
 
+void matvec_q4_0(const std::byte *W, const float *x, float *y, std::size_t out, std::size_t in) {
+  const std::size_t nblocks = in / kBlockSize;
+  const std::size_t row_bytes = nblocks * sizeof(BlockQ4_0);
+  for (std::size_t o = 0; o < out; ++o) {
+    const std::byte *row = W + o * row_bytes;
+    float acc = 0.0f;
+    for (std::size_t b = 0; b < nblocks; ++b) {
+      const std::byte *blk = row + b * sizeof(BlockQ4_0);
+      std::uint16_t d_bits = 0;
+      std::memcpy(&d_bits, blk, sizeof(d_bits));
+      const float d = f16_to_f32(d_bits);
+      const float *xb = x + b * kBlockSize;
+      for (std::size_t j = 0; j < 16; ++j) {
+        const std::uint8_t q = static_cast<std::uint8_t>(blk[2 + j]);
+        acc += d * (static_cast<float>(q & 0x0Fu) - 8.0f) * xb[j];
+        acc += d * (static_cast<float>(q >> 4) - 8.0f) * xb[j + 16];
+      }
+    }
+    y[o] = acc;
+  }
+}
+
 namespace {
 
 void matvec_f32_view(const std::byte *W, const float *x, float *y, std::size_t out,
@@ -64,10 +86,11 @@ struct QuantKernel {
   void (*fn)(const std::byte *, const float *, float *, std::size_t, std::size_t);
 };
 
-constexpr std::array<QuantKernel, 3> kQuantKernels{{
+constexpr std::array<QuantKernel, 4> kQuantKernels{{
     {gguf::GgmlType::F32, matvec_f32_view},
     {gguf::GgmlType::F16, matvec_f16_view},
     {gguf::GgmlType::Q8_0, matvec_q8_0},
+    {gguf::GgmlType::Q4_0, matvec_q4_0},
 }};
 
 } // namespace

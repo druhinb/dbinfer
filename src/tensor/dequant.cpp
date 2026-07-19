@@ -43,6 +43,21 @@ void dequant_row_q8_0(const std::byte *block_base, std::size_t in, float *out) {
   }
 }
 
+void dequant_row_q4_0(const std::byte *block_base, std::size_t in, float *out) {
+  const std::size_t nblocks = in / kBlockSize;
+  for (std::size_t b = 0; b < nblocks; ++b) {
+    const std::byte *blk = block_base + b * sizeof(BlockQ4_0);
+    std::uint16_t d_bits = 0;
+    std::memcpy(&d_bits, blk, sizeof(d_bits));
+    const float d = f16_to_f32(d_bits);
+    for (std::size_t j = 0; j < 16; ++j) {
+      const std::uint8_t q = static_cast<std::uint8_t>(blk[2 + j]);
+      out[b * kBlockSize + j] = d * (static_cast<float>(q & 0x0Fu) - 8.0f);
+      out[b * kBlockSize + j + 16] = d * (static_cast<float>(q >> 4) - 8.0f);
+    }
+  }
+}
+
 void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out) {
   switch (w.type) {
   case gguf::GgmlType::F32: {
@@ -60,6 +75,9 @@ void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out) {
   }
   case gguf::GgmlType::Q8_0:
     dequant_row_q8_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ8_0), in, out);
+    return;
+  case gguf::GgmlType::Q4_0:
+    dequant_row_q4_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ4_0), in, out);
     return;
   default:
     __builtin_unreachable(); // load validated w.type is one of the above
