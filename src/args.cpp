@@ -219,6 +219,16 @@ constexpr FlagSpec kFlags[] = {
        o.prefill_chunk = x;
        return {};
      }},
+    {"--grammar", "", true,
+     [](CliOptions &o, std::string_view, const char *v) -> std::expected<void, sample::Error> {
+       o.grammar_path = v;
+       return {};
+     }},
+    {"--grammar-stop", "", false,
+     [](CliOptions &o, std::string_view, const char *) -> std::expected<void, sample::Error> {
+       o.grammar_stop = true;
+       return {};
+     }},
 };
 
 const FlagSpec *find_flag(std::string_view a) {
@@ -305,6 +315,8 @@ std::string usage(const char *argv0) {
   s += "  --kv-cache-save <path>  dump the dense fp32 prefix cache after prefill\n";
   s += "  --kv-cache-load <path>  load a prefix cache and continue from it\n";
   s += "  --prefill-chunk <int>   prefill tokens per chunk, 1 = per token (default 1)\n";
+  s += "  --grammar <path>        constrain decoding to a GBNF grammar file\n";
+  s += "  --grammar-stop          stop when the grammar first reaches a complete state\n";
   return s;
 }
 

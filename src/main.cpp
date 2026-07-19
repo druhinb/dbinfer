@@ -1,5 +1,6 @@
 #include "args.hpp"
 #include "gguf/gguf.hpp"
+#include "grammar/grammar.hpp"
 #include "model/model.hpp"
 #include "sample/sample.hpp"
 #include "tensor/thread_pool.hpp"
@@ -251,13 +252,45 @@ int main(int argc, char **argv) {
     }
   }
 
+  const std::int32_t eos = tok.eos_id();
+
+  std::optional<dbinfer::grammar::Matcher> matcher;
+  std::vector<float> masked;
+  if (!opts.grammar_path.empty()) {
+    auto gtext = read_file(opts.grammar_path.c_str());
+    if (!gtext) {
+      std::fprintf(stderr, "error: cannot read grammar %s\n", opts.grammar_path.c_str());
+      return 1;
+    }
+    auto grammar = dbinfer::grammar::Grammar::parse(*gtext);
+    if (!grammar) {
+      std::fprintf(stderr, "error: grammar: %s\n", grammar.error().message.c_str());
+      return 1;
+    }
+    std::vector<std::string> token_bytes(vocab);
+    for (std::size_t id = 0; id < vocab; ++id) {
+      const std::int32_t one[1] = {static_cast<std::int32_t>(id)};
+      token_bytes[id] = tok.decode(std::span<const std::int32_t>(one, 1));
+    }
+    matcher.emplace(std::move(*grammar), std::move(token_bytes), eos);
+    masked.resize(vocab);
+  }
+
   // decode: sample one token from the current logits, then feed it back in
   // to get the next position's logits, until eos or the -n budget runs out.
-  const std::int32_t eos = tok.eos_id();
+  // a grammar, when present, masks disallowed tokens to -inf before sampling
+  // and then advances on the chosen token.
   for (int t = 0; t < opts.n; ++t) {
+    if (matcher) {
+      std::copy(logits, logits + vocab, masked.begin());
+      matcher->mask(masked);
+      logits = masked.data();
+    }
     std::int32_t next_tok = sampler.sample(logits, vocab, history);
     if (next_tok == eos)
       break;
+    if (matcher)
+      matcher->accept(next_tok);
     history.push_back(next_tok);
     if (opts.print_ids) {
       std::printf("%d\n", next_tok);
@@ -267,6 +300,8 @@ int main(int argc, char **argv) {
       std::fputs(piece.c_str(), stdout);
       std::fflush(stdout);
     }
+    if (matcher && opts.grammar_stop && matcher->complete())
+      break;
     logits = model.forward(next_tok, pos++);
   }
   if (!opts.print_ids)

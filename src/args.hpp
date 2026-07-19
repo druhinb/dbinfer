@@ -14,6 +14,7 @@ struct CliOptions {
   std::string perplexity_path; // non-empty selects perplexity mode
   std::string kv_cache_save;   // non-empty dumps the prefix cache after prefill
   std::string kv_cache_load;   // non-empty loads a prefix cache before prefill
+  std::string grammar_path;    // non-empty constrains decoding to a GBNF grammar
   int ppl_chunks = 0;          // 0 means all windows
   int prefill_chunk = 1;       // >1 prefills the prompt in fixed-size chunks
   int n = 128;
@@ -23,6 +24,7 @@ struct CliOptions {
   bool kv_int8 = false;
   bool print_ids = false;
   bool ppl_stream = false;
+  bool grammar_stop = false; // stop decoding when the grammar first completes
   sample::SamplerParams params;
 };
 
