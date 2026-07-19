@@ -46,6 +46,19 @@ void matvec_q6_k(const std::byte *W, const float *x, float *y, std::size_t out, 
 // y = W @ x dispatching on w.type (F32, F16, Q8_0, Q4_0, Q4_K, or Q6_K).
 void matvec_quant(QuantMatrix w, const float *x, float *y, std::size_t out, std::size_t in);
 
+// one matvec in a fused batch: weight w ([out, in]) times the shared x, into y.
+struct MatvecJob {
+  QuantMatrix w;
+  float *y;
+  std::size_t out;
+};
+
+// several independent matvecs that share x and in (e.g. the Q/K/V or gate/up
+// projections), run under a single thread-pool barrier instead of one each.
+// x is quantized at most once. Bitwise-identical to calling matvec_quant per
+// job; only the parallelization boundary changes.
+void matvec_quant_fused(const MatvecJob *jobs, std::size_t njobs, const float *x, std::size_t in);
+
 // batched matvec: C = A @ W^T for m rows of A ([m, in]) against the same
 // row-major weight W ([out, in]), writing C as [m, out].
 void matmul(const float *A, const float *W, float *C, std::size_t m, std::size_t out,
