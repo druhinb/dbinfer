@@ -1,9 +1,15 @@
+#include "dbmf/dbmf.hpp"
 #include "gguf/gguf.hpp"
 #include "model/model.hpp"
 #include "tensor/cpu.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul_neon.hpp"
 #include "tensor/thread_pool.hpp"
+
+#ifdef DBINFER_METAL
+#include "backend/backend.hpp"
+#include "backend/metal_backend.hpp"
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -47,16 +53,18 @@ double kernel_rate(Fn fn, const std::byte *W, const dbinfer::tensor::BlockQ8_0 *
 
 int main(int argc, char **argv) {
   if (argc < 2) {
-    std::fprintf(stderr, "usage: %s <model.gguf> [prefill=512] [decode=256]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s <model.gguf> [prefill=512] [decode=256] [gpu_layers=0]\n",
+                 argv[0]);
     return 2;
   }
   const char *path = argv[1];
   const int n_pre = argc > 2 ? std::atoi(argv[2]) : 512;
   const int n_dec = argc > 3 ? std::atoi(argv[3]) : 256;
+  const int gpu_layers = argc > 4 ? std::atoi(argv[4]) : 0;
 
-  auto loaded = dbinfer::gguf::load(path);
+  auto loaded = dbinfer::dbmf::load_model(path);
   if (!loaded) {
-    std::fprintf(stderr, "error: load gguf: %s\n",
+    std::fprintf(stderr, "error: load model: %s\n",
                  dbinfer::gguf::to_string(loaded.error()).c_str());
     return 1;
   }
@@ -72,6 +80,60 @@ int main(int argc, char **argv) {
   std::printf("model %s  dotprod=%d i8mm=%d\n", path, feat.dotprod, feat.i8mm);
 
   const std::int32_t tok = 40;
+
+  // chunked prefill tok/s over n_pre tokens. forward_chunk's f16 matmul routes to
+  // the metal backend when DBINFER_BACKEND=metal, otherwise stays threaded cpu.
+  if (model.kv_dense_f32() && n_pre >= 32) {
+    dbinfer::tensor::configure_thread_count(dbinfer::tensor::p_core_count());
+    const std::size_t chunk = 32;
+    std::vector<std::int32_t> toks(static_cast<std::size_t>(n_pre), tok);
+    std::vector<float> pf_logits(chunk * cfg.vocab_size);
+    std::vector<double> pf_rates;
+    for (int run = 0; run < 3; ++run) {
+      model.reset_kv();
+      std::int32_t pos = 0;
+      const auto t0 = clock_type::now();
+      for (std::size_t i = 0; i < static_cast<std::size_t>(n_pre); i += chunk) {
+        const std::size_t nn = std::min(chunk, static_cast<std::size_t>(n_pre) - i);
+        model.forward_chunk(toks.data() + i, pos, nn, pf_logits.data());
+        pos += static_cast<std::int32_t>(nn);
+      }
+      pf_rates.push_back(static_cast<double>(n_pre) / seconds(t0, clock_type::now()));
+    }
+    std::printf("chunked prefill chunk=%zu: %.2f tok/s (median of 3, %d tokens)\n", chunk,
+                median(pf_rates), n_pre);
+    model.reset_kv();
+  }
+
+#ifdef DBINFER_METAL
+  // gpu decode tok/s over n_dec steady-state tokens, wall(n_pre+n_dec)-wall(n_pre),
+  // single host thread. prefill n_pre tokens first so decode measures the loop.
+  if (gpu_layers > 0) {
+    dbinfer::backend::Backend *be = dbinfer::backend::metal_backend();
+    const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), cfg.n_layers);
+    if (be == nullptr || !model.kv_dense_f32() || !model.layers_offloadable(n) ||
+        !model.set_gpu_offload(be, n)) {
+      std::fprintf(stderr, "gpu decode bench unavailable\n");
+      return 1;
+    }
+    dbinfer::tensor::configure_thread_count(1);
+    std::vector<double> dec_rates;
+    for (int run = 0; run < 3; ++run) {
+      model.reset_kv();
+      std::int32_t pos = 0;
+      for (int i = 0; i < n_pre; ++i)
+        model.forward(tok, pos++);
+      const auto t1 = clock_type::now();
+      for (int i = 0; i < n_dec; ++i)
+        model.forward(tok, pos++);
+      dec_rates.push_back(static_cast<double>(n_dec) / seconds(t1, clock_type::now()));
+    }
+    std::printf("gpu-layers %zu: decode %.2f tok/s (median of 3, %d tokens)\n", n,
+                median(dec_rates), n_dec);
+    return 0;
+  }
+#endif
+
   for (std::size_t nt = 1; nt <= dbinfer::tensor::p_core_count(); ++nt) {
     dbinfer::tensor::configure_thread_count(nt);
     std::vector<double> pre_rates;
