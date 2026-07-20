@@ -457,3 +457,98 @@ commit 0bb2919, GGML_METAL=ON), llama-bench -ngl 99, M3 Max.
   f16                         10949          188.3
 
 engine at M1 for scale: q8_0 decode 26.4 gpu, 84.3 cpu threaded.
+
+## Phase 11 M2 (Metal occupancy) — 2026-07-19
+
+M1 ran one thread per output row, one thread per attention head, and one thread
+per rmsnorm row, so most GPU lanes sat idle every dispatch. M2 parallelizes
+within the existing kernels: a simdgroup per matvec row, a simdgroup per query
+head splitting positions, and 256 threads per rmsnorm row. No new features, same
+one command buffer per token, same no-copy KV.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Models: qwen2.5-0.5b Q8_0/Q4_0/F16, 24 blocks.
+
+Kernel designs:
+
+  quant matvec (q8_0/q4_0)  32 lanes compute exact int8 block dots in parallel
+                            into threadgroup memory, lane 0 folds the fp32
+                            partials in block order. bitwise vs CPU scalar.
+  f16 matvec                32 lanes stride the in-dim, combine with simd_sum.
+                            reorders the fp32 fold, atol 1e-4 + rtol 1e-4.
+  attention                 simdgroup per head, lanes split positions, softmax
+                            max/sum via simd_max/simd_sum. weighted-V sums
+                            positions in CPU order. within 1e-4.
+  rmsnorm                   256 threads per row, per-simdgroup simd_sum then an
+                            8-way fold. reorders the sum, within 1e-4.
+
+Bitwise gate (tests/metal_quant_test), GPU vs CPU scalar, memcmp-identical:
+
+  activation quant  rows {1,4} x in {896,4864}                bit-exact
+  Q8_0 matvec       out/in {896,4864,151936-lm_head}/{896,4864} bit-exact
+  Q4_0 matvec       same shapes                                bit-exact
+
+design (a) keeps the quant matvec bitwise: the integer block dot is order-free,
+and lane 0's fp32 accumulation runs in the same block order as the scalar
+reference, one fma per block.
+
+Tolerance gates (tests/metal_ops_test, tests/metal_matmul_test), GPU vs CPU:
+
+  rmsnorm    worst max_err 1.192e-06   (gate 1e-4)
+  rope       worst max_err 4.427e-05   (gate 1e-4, unchanged kernel)
+  attention  worst max_err 1.192e-07   (gate 1e-4)
+  f16 matvec worst atol+rtol ratio 0.64, abs max_err 2.67e-04 at in=4864
+             (rel ~1e-5, gate atol 1e-4 + rtol 1e-4)
+
+f16 matvec is the one numerics change: M1's per-row fold was bitwise, so its
+metal_matmul_test gate held at a bare atol 1e-4. the simd_sum reorder pushes the
+in=4864 shapes to 2.67e-4 absolute (rel ~1e-5), so the gate is now atol 1e-4 +
+rtol 1e-4. rmsnorm and attention already carried 1e-4 tolerance and stay inside.
+
+End-to-end greedy, --print-ids, 48 tokens, 2 prompts, gpu-layers 24 vs 0:
+
+  F16   both prompts               token-identical
+  Q8_0  'The quick brown fox'      diverges at token 30 (M1: 30)
+  Q8_0  'Once upon a time'         diverges at token 9  (M1: 37)
+  Q4_0  'The quick brown fox'      diverges at token 3  (M1: identical)
+  Q4_0  'Once upon a time'         token-identical      (M1: token 5)
+
+F16 stays token-identical despite the reordered rmsnorm/attention/f16 reductions.
+Quant near-tie flips move earlier or later per prompt because rmsnorm and
+attention now reduce out of the M1 sequential order; the matvec stays bitwise.
+this is the documented near-tie behavior, gated by perplexity, not tokens.
+
+Perplexity, WikiText-2 test, Q8_0, 4 chunks:
+
+  gpu-layers 0    PPL 13.382441
+  gpu-layers 24   PPL 13.397496   +0.112%   (M1: +0.055%)
+
+within noise, far inside the 1% weight-quant budget. the slightly larger delta
+than M1 is the reordered rmsnorm/attention reductions, not a matvec error.
+
+Decode tok/s, 128 tokens, wall(n=129)-wall(n=1), median of 3:
+
+  model  CPU threaded   M1 gpu   M2 gpu   llama.cpp metal
+  Q8_0   87.2           26.4     110.2    245.8
+  F16    7.9            6.96     24.9     188.3
+
+Q8_0 GPU decode is 4.2x M1 (26.4 -> 110.2) and now clears the CPU threaded
+reference (87.2). F16 GPU is 3.6x the old per-layer path and 3.2x CPU F16.
+
+Gap analysis vs llama.cpp 245.8 (Q8_0). per-token GPU command-buffer time
+(GPUEndTime-GPUStartTime) is 5.46 ms (Q8_0) and 6.70 ms (F16). wall is 9.07 ms
+(Q8_0, 110 tok/s), so ~3.6 ms/token is CPU-side: the 151936x896 lm_head matvec,
+token embedding, final rmsnorm, sampling, and the per-token buffer alloc/memcpy.
+llama.cpp runs the entire token, lm_head included, in 4.07 ms; our GPU portion
+alone (5.46 ms, no lm_head) already exceeds that. the compute is not the wall:
+each token issues ~500 serial dispatches (24 layers x ~21 kernels), so the GPU
+spends the time on launch latency and the serial dependency chain between
+dispatches at m=1, not on math. occupancy is fixed; dispatch count is not.
+
+M3 (ICB replay / dispatch-count reduction) should target, in order: (1) collapse
+the ~500 dispatches/token, fusing rmsnorm+quant, bias+rope into the projection
+epilogue, and the residual add into the matvec, and encoding the layer loop once
+into an indirect command buffer replayed per token instead of re-encoded; (2)
+move the lm_head matvec onto the GPU to erase the ~3.6 ms CPU tail; (3) drop the
+per-token host buffer alloc/memcpy by keeping x resident on the device across
+the token loop.
