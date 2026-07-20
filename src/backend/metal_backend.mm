@@ -331,6 +331,163 @@ kernel void mul_mat_q4_0(device const uchar *W    [[buffer(0)]],
   const ulong idx = (ulong)r * d.n_out + o;
   C[idx] = d.add_res ? acc + R[idx] : acc;
 }
+
+// batched siblings: up to three weights sharing one input, three outputs. each
+// output row runs the identical reduction as the single-weight kernel above, so
+// the result is bitwise identical to three separate dispatches. one dispatch
+// over out0+out1+out2 rows replaces three, cutting heavy launch latency. row o
+// selects its weight and output by segment. out2 is zero for a two-weight group
+// (gate/up), with W2/C2 aliasing W0/C0 so the third segment is never entered.
+struct GroupDims { uint out0; uint out1; uint out2; uint n_in; };
+
+kernel void mul_mat_f16_g3(device const half  *W0 [[buffer(0)]],
+                           device const half  *W1 [[buffer(1)]],
+                           device const half  *W2 [[buffer(2)]],
+                           device const float *A  [[buffer(3)]],
+                           device       float *C0 [[buffer(4)]],
+                           device       float *C1 [[buffer(5)]],
+                           device       float *C2 [[buffer(6)]],
+                           constant GroupDims &d   [[buffer(7)]],
+                           uint tg   [[threadgroup_position_in_grid]],
+                           uint lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg;
+  device const half *wrow;
+  device float *cout;
+  uint lo;
+  if (o < d.out0) { lo = o; wrow = W0 + (ulong)lo * d.n_in; cout = C0; }
+  else if (o < d.out0 + d.out1) { lo = o - d.out0; wrow = W1 + (ulong)lo * d.n_in; cout = C1; }
+  else if (o < d.out0 + d.out1 + d.out2) { lo = o - d.out0 - d.out1; wrow = W2 + (ulong)lo * d.n_in; cout = C2; }
+  else return;
+  float acc = 0.0f;
+  for (uint i = lane; i < d.n_in; i += 32)
+    acc = fma((float)wrow[i], A[i], acc);
+  acc = simd_sum(acc);
+  if (lane == 0)
+    cout[lo] = acc;
+}
+
+kernel void mul_mat_q8_0_g3(device const uchar *W0 [[buffer(0)]],
+                            device const uchar *W1 [[buffer(1)]],
+                            device const uchar *W2 [[buffer(2)]],
+                            device const uchar *X  [[buffer(3)]],
+                            device       float *C0 [[buffer(4)]],
+                            device       float *C1 [[buffer(5)]],
+                            device       float *C2 [[buffer(6)]],
+                            constant GroupDims &d   [[buffer(7)]],
+                            threadgroup int *sumi   [[threadgroup(0)]],
+                            uint tg   [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg;
+  device const uchar *wrow;
+  device float *cout;
+  uint lo;
+  const uint nb = d.n_in / 32;
+  if (o < d.out0) { lo = o; wrow = W0 + (ulong)lo * nb * 34; cout = C0; }
+  else if (o < d.out0 + d.out1) { lo = o - d.out0; wrow = W1 + (ulong)lo * nb * 34; cout = C1; }
+  else if (o < d.out0 + d.out1 + d.out2) { lo = o - d.out0 - d.out1; wrow = W2 + (ulong)lo * nb * 34; cout = C2; }
+  else return;
+  device const uchar *xrow = X;
+  for (uint b = lane; b < nb; b += 32) {
+    device const uchar *wb = wrow + (ulong)b * 34;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    int s = 0;
+    for (uint i = 0; i < 32; ++i)
+      s += (int)as_type<char>(wb[2 + i]) * (int)as_type<char>(xb[2 + i]);
+    sumi[b] = s;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (lane != 0)
+    return;
+  float acc = 0.0f;
+  for (uint b = 0; b < nb; ++b) {
+    device const uchar *wb = wrow + (ulong)b * 34;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    const ushort dwb = (ushort)wb[0] | ((ushort)wb[1] << 8);
+    const ushort dxb = (ushort)xb[0] | ((ushort)xb[1] << 8);
+    const float dw = (float)as_type<half>(dwb);
+    const float dx = (float)as_type<half>(dxb);
+    acc = fma(dw * dx, (float)sumi[b], acc);
+  }
+  cout[lo] = acc;
+}
+
+kernel void mul_mat_q4_0_g3(device const uchar *W0 [[buffer(0)]],
+                            device const uchar *W1 [[buffer(1)]],
+                            device const uchar *W2 [[buffer(2)]],
+                            device const uchar *X  [[buffer(3)]],
+                            device       float *C0 [[buffer(4)]],
+                            device       float *C1 [[buffer(5)]],
+                            device       float *C2 [[buffer(6)]],
+                            constant GroupDims &d   [[buffer(7)]],
+                            threadgroup int *sumi   [[threadgroup(0)]],
+                            uint tg   [[threadgroup_position_in_grid]],
+                            uint lane [[thread_index_in_simdgroup]]) {
+  const uint o = tg;
+  device const uchar *wrow;
+  device float *cout;
+  uint lo;
+  const uint nb = d.n_in / 32;
+  if (o < d.out0) { lo = o; wrow = W0 + (ulong)lo * nb * 18; cout = C0; }
+  else if (o < d.out0 + d.out1) { lo = o - d.out0; wrow = W1 + (ulong)lo * nb * 18; cout = C1; }
+  else if (o < d.out0 + d.out1 + d.out2) { lo = o - d.out0 - d.out1; wrow = W2 + (ulong)lo * nb * 18; cout = C2; }
+  else return;
+  device const uchar *xrow = X;
+  for (uint b = lane; b < nb; b += 32) {
+    device const uchar *wb = wrow + (ulong)b * 18;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    int s = 0;
+    for (uint j = 0; j < 16; ++j) {
+      const uint q = (uint)wb[2 + j];
+      s += ((int)(q & 0x0Fu) - 8) * (int)as_type<char>(xb[2 + j]);
+      s += ((int)(q >> 4) - 8) * (int)as_type<char>(xb[2 + j + 16]);
+    }
+    sumi[b] = s;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (lane != 0)
+    return;
+  float acc = 0.0f;
+  for (uint b = 0; b < nb; ++b) {
+    device const uchar *wb = wrow + (ulong)b * 18;
+    device const uchar *xb = xrow + (ulong)b * 34;
+    const ushort dwb = (ushort)wb[0] | ((ushort)wb[1] << 8);
+    const ushort dxb = (ushort)xb[0] | ((ushort)xb[1] << 8);
+    const float dw = (float)as_type<half>(dwb);
+    const float dx = (float)as_type<half>(dxb);
+    acc = fma(dw * dx, (float)sumi[b], acc);
+  }
+  cout[lo] = acc;
+}
+)MSL";
+
+// simdgroup_matrix GEMM for the m>1 batched paths (chunked prefill, spec verify
+// prefill). one 8x8 output tile per simdgroup, fp32 accumulate over 8-wide k
+// tiles. inputs are pre-padded to multiples of 8 so every tile is in bounds.
+// this reorders the reduction vs the CPU sequential matmul, so it is tolerance
+// gated (atol 1e-3), never bitwise. compiled as a separate library so a driver
+// without simdgroup_matrix leaves the main decode kernels intact.
+constexpr const char *kGemmShaderSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct GemmDims { uint m_pad; uint n_pad; uint k_pad; };
+
+kernel void gemm_f32(device const float *A [[buffer(0)]],
+                     device const float *W [[buffer(1)]],
+                     device       float *C [[buffer(2)]],
+                     constant GemmDims &d   [[buffer(3)]],
+                     uint2 tg [[threadgroup_position_in_grid]]) {
+  const uint ti = tg.x;
+  const uint tj = tg.y;
+  simdgroup_matrix<float, 8, 8> acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+  for (uint k = 0; k < d.k_pad; k += 8) {
+    simdgroup_matrix<float, 8, 8> am, bm;
+    simdgroup_load(am, A + (ulong)tj * 8 * d.k_pad + k, d.k_pad);
+    simdgroup_load(bm, W + (ulong)ti * 8 * d.k_pad + k, d.k_pad, ulong2(0, 0), true);
+    simdgroup_multiply_accumulate(acc, am, bm, acc);
+  }
+  simdgroup_store(acc, C + (ulong)tj * 8 * d.n_pad + ti * 8, d.n_pad);
+}
 )MSL";
 
 struct MatDims {
@@ -338,6 +495,12 @@ struct MatDims {
   std::uint32_t n_out;
   std::uint32_t n_in;
   std::uint32_t add_res;
+};
+
+struct GemmDims {
+  std::uint32_t m_pad;
+  std::uint32_t n_pad;
+  std::uint32_t k_pad;
 };
 
 struct RmsDims {
@@ -364,6 +527,13 @@ struct AttnDims {
 struct QuantDims {
   std::uint32_t rows;
   std::uint32_t nblocks;
+};
+
+struct GroupDims {
+  std::uint32_t out0;
+  std::uint32_t out1;
+  std::uint32_t out2;
+  std::uint32_t n_in;
 };
 
 // BlockQ8_0 stride matching tensor::BlockQ8_0 (2-byte fp16 scale + 32 int8).
@@ -416,10 +586,13 @@ public:
                id<MTLComputePipelineState> rope, id<MTLComputePipelineState> attention,
                id<MTLComputePipelineState> add_inplace, id<MTLComputePipelineState> swiglu,
                id<MTLComputePipelineState> quant_q8, id<MTLComputePipelineState> mul_mat_q8,
-               id<MTLComputePipelineState> mul_mat_q4)
+               id<MTLComputePipelineState> mul_mat_q4, id<MTLComputePipelineState> mul_mat_g3,
+               id<MTLComputePipelineState> mul_mat_q8_g3, id<MTLComputePipelineState> mul_mat_q4_g3,
+               id<MTLComputePipelineState> gemm)
       : device_(device), queue_(queue), mul_mat_(mul_mat), rmsnorm_(rmsnorm), rope_(rope),
         attention_(attention), add_inplace_(add_inplace), swiglu_(swiglu), quant_q8_(quant_q8),
-        mul_mat_q8_(mul_mat_q8), mul_mat_q4_(mul_mat_q4) {}
+        mul_mat_q8_(mul_mat_q8), mul_mat_q4_(mul_mat_q4), mul_mat_g3_(mul_mat_g3),
+        mul_mat_q8_g3_(mul_mat_q8_g3), mul_mat_q4_g3_(mul_mat_q4_g3), gemm_(gemm) {}
 
   [[nodiscard]] std::expected<void, Error> mul_mat_f16(const std::uint16_t *W, const float *A,
                                                        float *C, std::size_t m, std::size_t out,
@@ -488,6 +661,104 @@ public:
                                                         float *C, std::size_t m, std::size_t out,
                                                         std::size_t in) override {
     return mul_mat_quant(mul_mat_q4_, W, (in / 32) * 18, A, C, m, out, in);
+  }
+
+  [[nodiscard]] std::expected<void, Error>
+  mul_mat_group(WeightType type, std::span<const std::byte *const> weights,
+                std::span<const std::size_t> outs, const float *A, std::span<float *const> C,
+                std::size_t in) override {
+    const std::size_t g = weights.size();
+    if (g < 2 || g > 3 || outs.size() != g || C.size() != g)
+      return std::unexpected(Error{"metal: mul_mat_group needs 2 or 3 matched weights"});
+    @autoreleasepool {
+      GpuWeight w[3]{};
+      id<MTLBuffer> cbuf[3]{nil, nil, nil};
+      for (std::size_t i = 0; i < g; ++i) {
+        w[i].type = type;
+        w[i].out = static_cast<std::uint32_t>(outs[i]);
+        w[i].in = static_cast<std::uint32_t>(in);
+        w[i].buf = wrap_bytes(weights[i], weight_bytes(type, outs[i], in));
+        cbuf[i] = new_zeroed(outs[i] * sizeof(float));
+        if (w[i].buf == nil || cbuf[i] == nil)
+          return std::unexpected(Error{"metal: mul_mat_group buffer allocation failed"});
+      }
+      id<MTLBuffer> buf_a = new_from(A, in * sizeof(float));
+      id<MTLBuffer> buf_aq = nil;
+      if (type != WeightType::F16) {
+        buf_aq = new_zeroed((in / 32) * kQ8BlockBytes);
+        if (buf_aq == nil)
+          return std::unexpected(Error{"metal: mul_mat_group quant buffer allocation failed"});
+      }
+      if (buf_a == nil)
+        return std::unexpected(Error{"metal: mul_mat_group activation buffer allocation failed"});
+
+      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+      if (type != WeightType::F16)
+        encode_quant_q8(enc, buf_a, buf_aq, 1, in / 32);
+      const GpuWeight *w2 = g == 3 ? &w[2] : nullptr;
+      id<MTLBuffer> c2 = g == 3 ? cbuf[2] : nil;
+      encode_group(enc, w[0], w[1], w2, buf_a, buf_aq, cbuf[0], 0, cbuf[1], 0, c2, 0);
+      [enc endEncoding];
+      [cmd commit];
+      [cmd waitUntilCompleted];
+      if (cmd.status != MTLCommandBufferStatusCompleted)
+        return std::unexpected(Error{"metal: mul_mat_group command buffer did not complete"});
+
+      for (std::size_t i = 0; i < g; ++i)
+        std::memcpy(C[i], cbuf[i].contents, outs[i] * sizeof(float));
+    }
+    return {};
+  }
+
+  [[nodiscard]] std::expected<void, Error> mul_mat_f16_gemm(const std::uint16_t *W, const float *A,
+                                                            float *C, std::size_t m, std::size_t out,
+                                                            std::size_t in) override {
+    if (gemm_ == nil)
+      return std::unexpected(Error{"metal: simdgroup_matrix gemm unavailable"});
+    @autoreleasepool {
+      const std::size_t mp = round8(m);
+      const std::size_t np = round8(out);
+      const std::size_t kp = round8(in);
+      // zero-padded float staging keeps every 8x8 tile in bounds and lets the
+      // GEMM read the mmap weights after one half-to-float widen.
+      std::vector<float> ap(mp * kp, 0.0f);
+      for (std::size_t r = 0; r < m; ++r)
+        std::memcpy(ap.data() + r * kp, A + r * in, in * sizeof(float));
+      std::vector<float> wp(np * kp, 0.0f);
+      for (std::size_t o = 0; o < out; ++o)
+        for (std::size_t i = 0; i < in; ++i)
+          wp[o * kp + i] = half_to_f32(W[o * in + i]);
+
+      id<MTLBuffer> buf_a = new_from(ap.data(), ap.size() * sizeof(float));
+      id<MTLBuffer> buf_w = new_from(wp.data(), wp.size() * sizeof(float));
+      id<MTLBuffer> buf_c = new_zeroed(mp * np * sizeof(float));
+      if (buf_a == nil || buf_w == nil || buf_c == nil)
+        return std::unexpected(Error{"metal: gemm buffer allocation failed"});
+
+      const GemmDims d{static_cast<std::uint32_t>(mp), static_cast<std::uint32_t>(np),
+                       static_cast<std::uint32_t>(kp)};
+      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+      [enc setComputePipelineState:gemm_];
+      [enc setBuffer:buf_a offset:0 atIndex:0];
+      [enc setBuffer:buf_w offset:0 atIndex:1];
+      [enc setBuffer:buf_c offset:0 atIndex:2];
+      [enc setBytes:&d length:sizeof(d) atIndex:3];
+      const MTLSize groups = MTLSizeMake(np / 8, mp / 8, 1);
+      const MTLSize group = MTLSizeMake(32, 1, 1);
+      [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
+      [enc endEncoding];
+      [cmd commit];
+      [cmd waitUntilCompleted];
+      if (cmd.status != MTLCommandBufferStatusCompleted)
+        return std::unexpected(Error{"metal: gemm command buffer did not complete"});
+
+      const float *cp = static_cast<const float *>(buf_c.contents);
+      for (std::size_t r = 0; r < m; ++r)
+        std::memcpy(C + r * out, cp + r * np, out * sizeof(float));
+    }
+    return {};
   }
 
   [[nodiscard]] std::expected<void, Error> rmsnorm(const float *x, const float *weight, float eps,
@@ -694,6 +965,15 @@ private:
     id<MTLBuffer> gate_q;
   };
 
+  static std::size_t round8(std::size_t n) { return (n + 7) & ~std::size_t{7}; }
+
+  // arm64 __fp16 is IEEE binary16, matching the gguf half weight layout.
+  static float half_to_f32(std::uint16_t h) {
+    __fp16 v;
+    std::memcpy(&v, &h, sizeof(v));
+    return static_cast<float>(v);
+  }
+
   GpuWeight make_weight(const QWeight &w, std::size_t out, std::size_t in) {
     const std::size_t bytes = weight_bytes(w.type, out, in);
     GpuWeight g;
@@ -758,9 +1038,14 @@ private:
     encode_rmsnorm(enc, buf_x, 0, L.attn_norm, s.normed, 0, 1, dim, L.eps);
     if (quant_any(L.wq.type, L.wk.type, L.wv.type))
       encode_quant_q8(enc, s.normed, s.normed_q, 1, dim / 32);
-    encode_weight(enc, L.wq, s.normed, s.normed_q, s.q, 0);
-    encode_weight(enc, L.wk, s.normed, s.normed_q, cache_k_, slot_off);
-    encode_weight(enc, L.wv, s.normed, s.normed_q, cache_v_, slot_off);
+    if (same_group(L.wq, L.wk) && same_group(L.wq, L.wv)) {
+      encode_group(enc, L.wq, L.wk, &L.wv, s.normed, s.normed_q, s.q, 0, cache_k_, slot_off, cache_v_,
+                   slot_off);
+    } else {
+      encode_weight(enc, L.wq, s.normed, s.normed_q, s.q, 0);
+      encode_weight(enc, L.wk, s.normed, s.normed_q, cache_k_, slot_off);
+      encode_weight(enc, L.wv, s.normed, s.normed_q, cache_v_, slot_off);
+    }
     if (L.bq)
       encode_add(enc, s.q, 0, L.bq, q_n);
     if (L.bk)
@@ -779,8 +1064,12 @@ private:
     encode_rmsnorm(enc, buf_x, 0, L.ffn_norm, s.normed, 0, 1, dim, L.eps);
     if (quant_any(L.wgate.type, L.wup.type))
       encode_quant_q8(enc, s.normed, s.normed_q, 1, dim / 32);
-    encode_weight(enc, L.wgate, s.normed, s.normed_q, s.gate, 0);
-    encode_weight(enc, L.wup, s.normed, s.normed_q, s.up, 0);
+    if (same_group(L.wgate, L.wup)) {
+      encode_group(enc, L.wgate, L.wup, nullptr, s.normed, s.normed_q, s.gate, 0, s.up, 0, nil, 0);
+    } else {
+      encode_weight(enc, L.wgate, s.normed, s.normed_q, s.gate, 0);
+      encode_weight(enc, L.wup, s.normed, s.normed_q, s.up, 0);
+    }
     encode_swiglu(enc, s.gate, s.up, ff);
     if (quant_any(L.wdown.type))
       encode_quant_q8(enc, s.gate, s.gate_q, 1, ff / 32);
@@ -870,6 +1159,44 @@ private:
     [enc setBuffer:c offset:c_off atIndex:4];
     [enc setThreadgroupMemoryLength:(in / 32) * sizeof(std::int32_t) atIndex:0];
     const MTLSize groups = MTLSizeMake(out, m, 1);
+    const MTLSize group = MTLSizeMake(32, 1, 1);
+    [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
+  }
+
+  // batchable when the siblings share dtype and input width, the invariant the
+  // grouped kernel relies on for a single shared input and one dispatch.
+  static bool same_group(const GpuWeight &a, const GpuWeight &b) {
+    return a.type == b.type && a.in == b.in;
+  }
+
+  // two or three sibling weights sharing input a (F16) or aq (quant), written to
+  // c0/c1/c2 at their offsets, in one dispatch over out0+out1+out2 rows. w2 null
+  // encodes a two-weight group, aliasing the third slots so validation passes.
+  void encode_group(id<MTLComputeCommandEncoder> enc, const GpuWeight &w0, const GpuWeight &w1,
+                    const GpuWeight *w2, id<MTLBuffer> a, id<MTLBuffer> aq, id<MTLBuffer> c0,
+                    std::size_t c0_off, id<MTLBuffer> c1, std::size_t c1_off, id<MTLBuffer> c2,
+                    std::size_t c2_off) {
+    const std::uint32_t out2 = w2 ? w2->out : 0;
+    const GroupDims dims{w0.out, w1.out, out2, w0.in};
+    id<MTLBuffer> b2w = w2 ? w2->buf : w0.buf;
+    id<MTLBuffer> b2c = w2 ? c2 : c0;
+    const std::size_t b2c_off = w2 ? c2_off : c0_off;
+    if (w0.type == WeightType::F16) {
+      [enc setComputePipelineState:mul_mat_g3_];
+      [enc setBuffer:a offset:0 atIndex:3];
+    } else {
+      [enc setComputePipelineState:w0.type == WeightType::Q8_0 ? mul_mat_q8_g3_ : mul_mat_q4_g3_];
+      [enc setBuffer:aq offset:0 atIndex:3];
+      [enc setThreadgroupMemoryLength:(w0.in / 32) * sizeof(std::int32_t) atIndex:0];
+    }
+    [enc setBuffer:w0.buf offset:0 atIndex:0];
+    [enc setBuffer:w1.buf offset:0 atIndex:1];
+    [enc setBuffer:b2w offset:0 atIndex:2];
+    [enc setBuffer:c0 offset:c0_off atIndex:4];
+    [enc setBuffer:c1 offset:c1_off atIndex:5];
+    [enc setBuffer:b2c offset:b2c_off atIndex:6];
+    [enc setBytes:&dims length:sizeof(dims) atIndex:7];
+    const MTLSize groups = MTLSizeMake(w0.out + w1.out + out2, 1, 1);
     const MTLSize group = MTLSizeMake(32, 1, 1);
     [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
   }
@@ -989,6 +1316,10 @@ private:
   id<MTLComputePipelineState> quant_q8_;
   id<MTLComputePipelineState> mul_mat_q8_;
   id<MTLComputePipelineState> mul_mat_q4_;
+  id<MTLComputePipelineState> mul_mat_g3_;
+  id<MTLComputePipelineState> mul_mat_q8_g3_;
+  id<MTLComputePipelineState> mul_mat_q4_g3_;
+  id<MTLComputePipelineState> gemm_;
 
   std::vector<LayerGpu> offload_;
   id<MTLBuffer> cache_k_ = nil;
@@ -1056,13 +1387,30 @@ std::unique_ptr<MetalBackend> build_backend() {
     id<MTLComputePipelineState> quant_q8 = make_pipeline(device, library, "quantize_q8_0");
     id<MTLComputePipelineState> mul_mat_q8 = make_pipeline(device, library, "mul_mat_q8_0");
     id<MTLComputePipelineState> mul_mat_q4 = make_pipeline(device, library, "mul_mat_q4_0");
+    id<MTLComputePipelineState> mul_mat_g3 = make_pipeline(device, library, "mul_mat_f16_g3");
+    id<MTLComputePipelineState> mul_mat_q8_g3 = make_pipeline(device, library, "mul_mat_q8_0_g3");
+    id<MTLComputePipelineState> mul_mat_q4_g3 = make_pipeline(device, library, "mul_mat_q4_0_g3");
     if (mul_mat == nil || rmsnorm == nil || rope == nil || attention == nil ||
         add_inplace == nil || swiglu == nil || quant_q8 == nil || mul_mat_q8 == nil ||
-        mul_mat_q4 == nil)
+        mul_mat_q4 == nil || mul_mat_g3 == nil || mul_mat_q8_g3 == nil || mul_mat_q4_g3 == nil)
       return nullptr;
 
+    // the simdgroup_matrix GEMM compiles into its own library so a driver that
+    // rejects the op leaves the decode kernels above intact; gemm_ stays nil and
+    // the m>1 GEMM method reports unavailable.
+    id<MTLComputePipelineState> gemm = nil;
+    NSError *gerr = nil;
+    NSString *gsrc = [NSString stringWithUTF8String:kGemmShaderSource];
+    id<MTLLibrary> glib = [device newLibraryWithSource:gsrc options:opts error:&gerr];
+    if (glib != nil)
+      gemm = make_pipeline(device, glib, "gemm_f32");
+    else
+      std::fprintf(stderr, "metal: gemm shader compile failed: %s\n",
+                   gerr.localizedDescription.UTF8String);
+
     return std::make_unique<MetalBackend>(device, queue, mul_mat, rmsnorm, rope, attention,
-                                          add_inplace, swiglu, quant_q8, mul_mat_q8, mul_mat_q4);
+                                          add_inplace, swiglu, quant_q8, mul_mat_q8, mul_mat_q4,
+                                          mul_mat_g3, mul_mat_q8_g3, mul_mat_q4_g3, gemm);
   }
 }
 

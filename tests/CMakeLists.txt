@@ -57,6 +57,10 @@ if(DBINFER_METAL)
   add_executable(metal_head_test metal_head_test.cpp)
   target_link_libraries(metal_head_test PRIVATE dbinfer_tensor dbinfer_backend)
   add_test(NAME metal_head_test COMMAND metal_head_test)
+
+  add_executable(metal_gemm_test metal_gemm_test.cpp)
+  target_link_libraries(metal_gemm_test PRIVATE dbinfer_tensor dbinfer_backend)
+  add_test(NAME metal_gemm_test COMMAND metal_gemm_test)
 endif()
 
 add_executable(sample_test sample_test.cpp)
