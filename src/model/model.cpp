@@ -855,12 +855,19 @@ bool Model::set_gpu_offload(backend::Backend *backend, std::size_t n_layers) {
     g.rms_eps = cfg_.rms_eps;
     g.rope_theta = cfg_.rope_theta;
   }
-  auto r =
-      backend_->setup_offload(gl, kv_.dense_k(), kv_.dense_v(), kv_.capacity(), kv_.pos_stride());
+  // the on-device final norm and lm_head only run when every block is offloaded
+  // and the head dtype is one the Metal matvec reads. otherwise the CPU keeps
+  // the tail and a null head disables decode_token_full.
+  gpu_head_ = n_layers == cfg_.n_layers && to_weight_type(lm_head_.type).has_value();
+  const backend::QWeight head =
+      gpu_head_ ? to_qweight(lm_head_) : backend::QWeight{nullptr, backend::WeightType::F16};
+  auto r = backend_->setup_offload(gl, kv_.dense_k(), kv_.dense_v(), kv_.capacity(),
+                                   kv_.pos_stride(), output_norm_, head, cfg_.vocab_size);
   if (!r) {
     std::fprintf(stderr, "metal: offload setup failed (%s), staying on CPU\n",
                  r.error().message.c_str());
     gpu_layers_ = 0;
+    gpu_head_ = false;
     return false;
   }
   return true;
@@ -880,10 +887,20 @@ const float *Model::forward(std::int32_t token, std::int32_t pos) {
   const std::size_t dim = cfg_.embedding_length;
   embed(token, x_.data());
   const bool offload = backend_ != nullptr && gpu_layers_ > 0 && kv_.dense_f32();
-  if (offload)
-    decode_token_gpu(x_.data(), pos);
-  for (std::size_t l = offload ? gpu_layers_ : 0; l < cfg_.n_layers; ++l)
-    decode_layer(l, x_.data(), pos, kv_, nullptr);
+  if (offload && gpu_head_) {
+    if (auto r = backend_->decode_token_full(x_.data(), pos)) {
+      kv_.mark_position(static_cast<std::size_t>(pos));
+      return *r;
+    }
+    // GPU tail failed, redo the whole token on CPU from the embedding.
+    for (std::size_t l = 0; l < cfg_.n_layers; ++l)
+      decode_layer(l, x_.data(), pos, kv_, nullptr);
+  } else {
+    if (offload)
+      decode_token_gpu(x_.data(), pos);
+    for (std::size_t l = offload ? gpu_layers_ : 0; l < cfg_.n_layers; ++l)
+      decode_layer(l, x_.data(), pos, kv_, nullptr);
+  }
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
   tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();
