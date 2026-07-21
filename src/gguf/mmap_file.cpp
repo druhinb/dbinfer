@@ -10,6 +10,9 @@
 
 namespace dbinfer::gguf {
 
+using std::string;
+using std::unexpected;
+
 MappedFile::MappedFile(MappedFile&& other) noexcept : data_(other.data_), size_(other.size_) {
   other.data_ = nullptr;
   other.size_ = 0;
@@ -37,31 +40,31 @@ void MappedFile::reset() noexcept {
 }
 
 std::expected<MappedFile, Error> MappedFile::open(std::string_view path) {
-  std::string path_str(path);
+  string path_str(path);
 
   int fd = ::open(path_str.c_str(), O_RDONLY);
   if (fd < 0) {
-    return std::unexpected(Error{std::string("cannot open: ") + std::strerror(errno), path_str, 0});
+    return unexpected(Error{string("cannot open: ") + std::strerror(errno), path_str, 0});
   }
 
   struct stat st{};
   if (::fstat(fd, &st) != 0) {
-    Error e{std::string("fstat failed: ") + std::strerror(errno), path_str, 0};
+    Error e{string("fstat failed: ") + std::strerror(errno), path_str, 0};
     ::close(fd);
-    return std::unexpected(std::move(e));
+    return unexpected(std::move(e));
   }
 
   if (st.st_size == 0) {
     ::close(fd);
-    return std::unexpected(Error{"file is empty", path_str, 0});
+    return unexpected(Error{"file is empty", path_str, 0});
   }
 
   const auto size = static_cast<std::size_t>(st.st_size);
   void* addr = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (addr == MAP_FAILED) {
-    Error e{std::string("mmap failed: ") + std::strerror(errno), path_str, 0};
+    Error e{string("mmap failed: ") + std::strerror(errno), path_str, 0};
     ::close(fd);
-    return std::unexpected(std::move(e));
+    return unexpected(std::move(e));
   }
 
   ::close(fd);
@@ -74,11 +77,10 @@ std::expected<MappedFile, Error> MappedFile::open(std::string_view path) {
 }
 
 std::expected<MappedFile, Error> MappedFile::anonymous(std::size_t size) {
-  if (size == 0) return std::unexpected(Error{"anonymous mapping of zero bytes", "", 0});
+  if (size == 0) return unexpected(Error{"anonymous mapping of zero bytes", "", 0});
   void* addr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
   if (addr == MAP_FAILED)
-    return std::unexpected(
-        Error{std::string("anonymous mmap failed: ") + std::strerror(errno), "", 0});
+    return unexpected(Error{string("anonymous mmap failed: ") + std::strerror(errno), "", 0});
   return MappedFile(addr, size);
 }
 
