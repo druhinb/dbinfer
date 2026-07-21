@@ -662,3 +662,129 @@ saturates the GPU and the m=1 chain stops being launch-bound; (2) batch QKV and
 gate/up into single dispatches (one input, multiple weights) to cut the heavy
 dispatch count where it now matters; (3) GPU speculative verify. skip ICB: the
 encode measurement (0.18 ms) does not justify it.
+
+## Phase 11 M4 (wide QKV/FFN dispatches, simdgroup GEMM, GPU spec verify) — 2026-07-19
+
+M3 proved the m=1 chain is launch-bound: cutting light dispatches was wall
+neutral, the heavy matvec dispatch latency is the wall. M4 batches the sibling
+projections into single wide dispatches, adds a simdgroup_matrix GEMM for the
+m>1 paths, and routes the F16 speculative verify onto the GPU.
+
+Machine: Apple M3 Max, 12 P-cores, 48 GB unified memory.
+Models: qwen2.5-0.5b Q8_0/F16, 24 blocks.
+
+Changes:
+
+  wide QKV / gate-up      one dispatch over out_q+out_k+out_v rows replaces three
+                          (mul_mat_*_g3), and gate+up collapse to one. row o
+                          selects its weight and output by segment, so each row
+                          runs the identical reduction as the single-weight
+                          kernel. bitwise vs three separate dispatches.
+  simdgroup GEMM          gemm_f32 tiles C=A x W^T in 8x8 simdgroup_matrix tiles
+                          with fp32 accumulate for the m>1 batched paths. its own
+                          library so a driver lacking the op leaves decode intact.
+  gpu speculative verify  the F16 target verify (forward_chunk, m>1) already
+                          routes to the metal mul_mat_f16 seam, which is bitwise
+                          vs the cpu path, so the greedy stream stays identical.
+
+Dispatch count per token (batching removes 2 heavy QKV + 1 heavy gate/up per
+layer):
+
+  Q8_0  M3 20/layer x 24 + 3 tail = 483  ->  M4 17/layer x 24 + 3 tail = 411
+  F16   M3 16/layer x 24 + 2 tail = 386  ->  M4 13/layer x 24 + 2 tail = 314
+
+Bitwise gate (tests/metal_quant_test), grouped vs separate dispatches:
+
+  group q8 g=3 (QKV)   bit-exact       group q8 g=2 (gate/up)   bit-exact
+  group q4 g=3 (QKV)   bit-exact       group q4 g=2 (gate/up)   bit-exact
+  group f16 g=3 (QKV)  bit-exact       group f16 g=2 (gate/up)  bit-exact
+
+  the wide dispatch changes the launch, not the per-row math. the isolated Q8_0/
+  Q4_0/F16 matvec and activation quant stay bit-exact to the cpu scalar too.
+
+simdgroup GEMM tolerance (tests/metal_gemm_test), vs cpu matmul_quant F16:
+
+  m in {1,5,8,64}, out/in in {896,4864}: worst max_err 0.000e+00 (gate atol 1e-3)
+
+  the padded staging keeps every 8x8 tile in bounds so non-multiple-of-8 m and
+  the qwen projection widths verify. the tiled fp32 reduction reorders vs the cpu
+  sequential matmul, so it is gated by tolerance, never used for m=1 decode.
+
+End-to-end greedy, --print-ids, 48 tokens, 2 prompts, gpu-layers 24 vs 0:
+
+  F16   both prompts               token-identical
+  Q8_0  'The quick brown fox'      diverges at token 30 (M3: 31)
+  Q8_0  'Once upon a time'         diverges at token 9  (M3: 10)
+
+F16 stays token-identical through the wide dispatches. Q8_0 near-tie flips track
+the documented rmsnorm/attention reorder, unchanged by the batching, which is
+bitwise. gated by perplexity.
+
+Perplexity, WikiText-2 test, Q8_0, 4 chunks:
+
+  gpu-layers 0    PPL 13.382441
+  gpu-layers 24   PPL 13.397497   +0.112%   (M3: +0.112%)
+
+identical to M3: perplexity runs the m=1 decode path, where the batched matvec is
+bitwise, so the +0.112% is the unchanged M2 reduction reorder.
+
+Speculative decode, F16 target + Q4_0 draft (tests/speculative_test, DBINFER_
+BACKEND=metal), token-identical gate:
+
+  k=4  token-identical over 48 tokens, accepted 38/52
+  k=8  token-identical over 48 tokens, accepted 44/80
+
+  the verify runs its k+1 batched projections on the gpu (mul_mat_f16, bitwise),
+  the greedy reference runs m=1 on cpu; both streams match. this is the order-
+  preserving path: a simdgroup_matrix verify would reorder the reduction and flip
+  near-tie accept/reject, so the gemm serves prefill only, never the spec gate.
+
+Spec decode tok/s, 'Once upon a time in a distant land', 128/(wall(144)-wall(16)):
+
+  spec off                    8.53 tok/s
+  spec on k=4 cpu verify      9.53 tok/s   1.12x
+  spec on k=4 gpu verify     16.52 tok/s   1.94x   (1.73x vs cpu verify)
+
+Decode tok/s, 128 tokens, wall(n_pre+128)-wall(n_pre), median of 3 (committed
+tools/bench <model> 1 128 24). historical M1-M3 columns from the sections above;
+M4 remeasured M3 at 137.8 (Q8_0) / 124.2 (F16) on this same harness, so the M4
+delta is +6.7% (Q8_0) and +9.7% (F16):
+
+  model  CPU   M1     M2     M3     M4     llama.cpp metal
+  Q8_0   90.1  26.4   110.2  134.7  147.0  245.8
+  F16    8.5   6.96   24.9   120.8  136.3  188.3
+
+Prefill tok/s, chunked, chunk=32, 512 tokens, median of 3 (committed
+tools/bench <model> 512 1 24, DBINFER_BACKEND=metal for the gpu column):
+
+  model  CPU    GPU (mul_mat_f16 seam)   llama.cpp pp512
+  F16    53.3   214.2                    10949
+  Q8_0   79.7   77.7 (F16-only seam)     10570
+
+the gpu prefill uses the order-preserving mul_mat_f16 seam (matmul_quant routes
+F16 m>1 to metal). Q8_0 m>1 is not routed, so its prefill stays on cpu. the
+simdgroup gemm is not wired into this seam: the seam is shared by speculative
+verify (a reordered gemm would break the spec identity gate) and the gemm stages
+each weight half-to-float per call, which would regress prefill until the weights
+are staged to float persistently.
+
+Where the metal backend stands after M1-M4, vs llama.cpp Metal:
+
+  decode Q8_0   147.0 / 245.8 = 60%      decode F16   136.3 / 188.3 = 72%
+  prefill F16   214.2 / 10949 = 2.0%
+
+decode closed from M1's 11% (Q8_0) to 60%. the residual gap is the ~411 serial
+m=1 dispatches per token: batching cut the heavy count 7->4/layer for a measured
++7-10%, but the chain is still launch-latency bound, not compute bound. llama.cpp
+runs the token in far fewer, wider dispatches with a persistent command graph.
+
+prefill is 4x over cpu on F16 but 2% of llama.cpp, which runs a fused batched
+attention and matmul entirely on-device. closing prefill needs the m>1 forward
+resident on the gpu (attention, rmsnorm, elementwise, not just the matmuls) with
+persistent float weights feeding the simdgroup gemm, so a chunk does not round-
+trip a command buffer and host copy per matmul.
+
+Future work: (1) route the simdgroup gemm into a prefill-only seam with persistent
+float-staged weights; (2) move the m>1 attention/rmsnorm/rope/elementwise onto the
+gpu so prefill and spec verify run a whole chunk on-device; (3) a persistent
+command graph or ICB for the m=1 chain to attack the launch-latency wall directly.
