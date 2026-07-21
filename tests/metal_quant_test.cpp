@@ -3,6 +3,7 @@
 // block accumulation is sequential, so GPU and CPU are memcmp-identical, not
 // merely within tolerance. skips cleanly when no Metal device is present.
 
+#include "backend/backend.hpp"
 #include "backend/metal_backend.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
@@ -12,6 +13,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <expected>
+#include <span>
 #include <vector>
 
 namespace {
@@ -145,6 +148,82 @@ void test_q4(dbinfer::backend::Backend &metal, std::size_t out, std::size_t in) 
     ++g_failures;
 }
 
+std::vector<std::uint16_t> f16_weight(Lcg &rng, std::size_t out, std::size_t in) {
+  std::vector<std::uint16_t> w(out * in);
+  for (auto &v : w)
+    v = dbinfer::tensor::f32_to_f16(rng.next());
+  return w;
+}
+
+using dbinfer::backend::WeightType;
+
+// grouped QKV/gate-up matvec must be bitwise identical to running each sibling
+// weight through the single-weight kernel: the wide dispatch changes only the
+// launch, not the per-row reduction.
+void test_group(dbinfer::backend::Backend &metal, WeightType type, std::vector<std::size_t> outs,
+                std::size_t in) {
+  Lcg rng{0x9E37 ^ (outs[0] * 31 + outs.size() * 7 + in + static_cast<std::size_t>(type) * 101)};
+  const std::size_t g = outs.size();
+  std::vector<float> a = rand_activation(rng, 1, in);
+
+  std::vector<std::vector<std::byte>> wq(g);
+  std::vector<std::vector<std::uint16_t>> wf(g);
+  std::vector<const std::byte *> wp(g);
+  for (std::size_t i = 0; i < g; ++i) {
+    if (type == WeightType::Q8_0) {
+      wq[i] = quant_weight_q8(rng, outs[i], in);
+      wp[i] = wq[i].data();
+    } else if (type == WeightType::Q4_0) {
+      wq[i] = rand_weight_q4(rng, outs[i], in);
+      wp[i] = wq[i].data();
+    } else {
+      wf[i] = f16_weight(rng, outs[i], in);
+      wp[i] = reinterpret_cast<const std::byte *>(wf[i].data());
+    }
+  }
+
+  std::vector<std::vector<float>> sep(g);
+  for (std::size_t i = 0; i < g; ++i) {
+    sep[i].assign(outs[i], 0.0f);
+    std::expected<void, dbinfer::backend::Error> r;
+    if (type == WeightType::Q8_0)
+      r = metal.mul_mat_q8_0(wp[i], a.data(), sep[i].data(), 1, outs[i], in);
+    else if (type == WeightType::Q4_0)
+      r = metal.mul_mat_q4_0(wp[i], a.data(), sep[i].data(), 1, outs[i], in);
+    else
+      r = metal.mul_mat_f16(reinterpret_cast<const std::uint16_t *>(wp[i]), a.data(), sep[i].data(),
+                            1, outs[i], in);
+    if (!r) {
+      std::printf("  group separate error: %s\n", r.error().message.c_str());
+      ++g_failures;
+      return;
+    }
+  }
+
+  std::vector<std::vector<float>> grp(g);
+  std::vector<float *> cp(g);
+  for (std::size_t i = 0; i < g; ++i) {
+    grp[i].assign(outs[i], 0.0f);
+    cp[i] = grp[i].data();
+  }
+  auto r = metal.mul_mat_group(type, std::span<const std::byte *const>(wp.data(), g),
+                               std::span<const std::size_t>(outs.data(), g), a.data(),
+                               std::span<float *const>(cp.data(), g), in);
+  if (!r) {
+    std::printf("  group error: %s\n", r.error().message.c_str());
+    ++g_failures;
+    return;
+  }
+
+  bool ok = true;
+  for (std::size_t i = 0; i < g; ++i)
+    ok = ok && std::memcmp(sep[i].data(), grp[i].data(), outs[i] * sizeof(float)) == 0;
+  const char *tn = type == WeightType::Q8_0 ? "q8" : type == WeightType::Q4_0 ? "q4" : "f16";
+  std::printf("  group %s g=%zu in=%zu %s\n", tn, g, in, ok ? "bit-exact vs separate" : "MISMATCH");
+  if (!ok)
+    ++g_failures;
+}
+
 } // namespace
 
 int main() {
@@ -163,6 +242,13 @@ int main() {
   for (const auto &s : shapes) {
     test_q8(*metal, s[0], s[1]);
     test_q4(*metal, s[0], s[1]);
+  }
+
+  // QKV (14x64, 2x64, 2x64) and gate/up (4864, 4864) grouped vs separate, all
+  // dtypes, at the qwen2.5-0.5b projection widths (in=896).
+  for (WeightType type : {WeightType::Q8_0, WeightType::Q4_0, WeightType::F16}) {
+    test_group(*metal, type, {896, 128, 128}, 896);
+    test_group(*metal, type, {4864, 4864}, 896);
   }
 
   check(g_failures == 0, "GPU quant matvec and activation quant bitwise-identical to CPU scalar");

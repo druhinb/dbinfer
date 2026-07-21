@@ -88,6 +88,25 @@ public:
                                                                 std::size_t out,
                                                                 std::size_t in) = 0;
 
+  // two or three sibling weights of one dtype sharing input A[in], each written
+  // to its C[i][out[i]] in a single wide dispatch. every output row runs the same
+  // reduction as the single-weight matvec, so results are bitwise identical to
+  // separate mul_mat calls. this batches the QKV and gate/up projections. m is 1.
+  [[nodiscard]] virtual std::expected<void, Error>
+  mul_mat_group(WeightType type, std::span<const std::byte *const> weights,
+                std::span<const std::size_t> outs, const float *A, std::span<float *const> C,
+                std::size_t in) = 0;
+
+  // C[m, out] = A[m, in] x W[out, in]^T with F16 W, run as a simdgroup_matrix
+  // tiled GEMM with fp32 accumulate for the m>1 batched paths. the tiled
+  // reduction reorders vs the CPU sequential matmul, so it matches within GEMM
+  // tolerance (atol 1e-3), not bitwise; never use it for the m=1 decode path.
+  // returns an error when the device lacks simdgroup_matrix.
+  [[nodiscard]] virtual std::expected<void, Error> mul_mat_f16_gemm(const std::uint16_t *W,
+                                                                    const float *A, float *C,
+                                                                    std::size_t m, std::size_t out,
+                                                                    std::size_t in) = 0;
+
   // out = x / rms(x) * weight over each of rows rows of dim, eps inside the
   // sqrt. mirrors tensor::rmsnorm; sequential mean-of-squares matches it.
   [[nodiscard]] virtual std::expected<void, Error> rmsnorm(const float *x, const float *weight,
