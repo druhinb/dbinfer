@@ -1,3 +1,5 @@
 # CLAUDE.md: clang-format runs via hook; no hand-formatting.
-BasedOnStyle: LLVM
+BasedOnStyle: Google
 ColumnLimit: 100
+DerivePointerAlignment: false
+PointerAlignment: Left
