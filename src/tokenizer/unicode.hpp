@@ -16,7 +16,7 @@ std::vector<std::uint32_t> utf8_to_cpts(std::string_view s);
 
 std::string cpt_to_utf8(std::uint32_t cpt);
 
-// Expected UTF-8 sequence length from a lead byte (llama.cpp unicode_len_utf8).
+// expected UTF-8 sequence length from a lead byte (llama.cpp unicode_len_utf8).
 std::size_t utf8_len(unsigned char lead);
 
 bool is_letter(std::uint32_t cpt);

@@ -174,8 +174,7 @@ std::vector<std::string> pretokenize(std::string_view text) {
 // merge its two symbols in place (extending the left one, zeroing the
 // right), and requeue the merge's new left/right neighbor pairs. A popped
 // bigram whose symbols were already consumed, or whose concatenated text no
-// longer matches (because a neighbor merged first), is skipped rather than
-// applied.
+// longer matches (because a neighbor merged first), is skipped.
 void bpe_word(const std::string& word, const BpeRanks& ranks, const Vocab& vocab,
               std::vector<std::int32_t>& out) {
   if (word.empty()) return;
