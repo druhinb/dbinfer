@@ -25,9 +25,9 @@ bool is_whitespace(std::uint32_t cpt);
 
 // GPT2 byte-level codec. byte_to_unicode maps a raw byte to the UTF-8 of its
 // mapped codepoint; cpt_to_byte reverses a single mapped codepoint.
-const std::string &byte_to_unicode(std::uint8_t b);
-bool cpt_to_byte(std::uint32_t cpt, std::uint8_t &out);
+const std::string& byte_to_unicode(std::uint8_t b);
+bool cpt_to_byte(std::uint32_t cpt, std::uint8_t& out);
 
-} // namespace dbinfer::tokenizer
+}  // namespace dbinfer::tokenizer
 
-#endif // DBINFER_TOKENIZER_UNICODE_HPP
+#endif  // DBINFER_TOKENIZER_UNICODE_HPP

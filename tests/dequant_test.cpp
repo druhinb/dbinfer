@@ -11,7 +11,7 @@ namespace {
 
 int g_failures = 0;
 
-void check_eq(const char *what, float got, float want) {
+void check_eq(const char* what, float got, float want) {
   if (got == want) {
     std::printf("PASS %-24s %.9g\n", what, static_cast<double>(got));
   } else {
@@ -21,7 +21,7 @@ void check_eq(const char *what, float got, float want) {
   }
 }
 
-void check_le(const char *what, float got, float bound) {
+void check_le(const char* what, float got, float bound) {
   if (got <= bound) {
     std::printf("PASS %-24s %.9g <= %.9g\n", what, static_cast<double>(got),
                 static_cast<double>(bound));
@@ -32,7 +32,7 @@ void check_le(const char *what, float got, float bound) {
   }
 }
 
-void check_u16(const char *what, std::uint16_t got, std::uint16_t want) {
+void check_u16(const char* what, std::uint16_t got, std::uint16_t want) {
   if (got == want) {
     std::printf("PASS %-24s 0x%04X\n", what, got);
   } else {
@@ -43,7 +43,7 @@ void check_u16(const char *what, std::uint16_t got, std::uint16_t want) {
 
 bool signbit_of(float v) { return std::signbit(v); }
 
-} // namespace
+}  // namespace
 
 int main() {
   using dbinfer::tensor::f16_to_f32;
@@ -86,7 +86,7 @@ int main() {
     }
   }
   {
-    float v = f16_to_f32(0x7E00); // a NaN pattern (exp=31, mant!=0)
+    float v = f16_to_f32(0x7E00);  // a NaN pattern (exp=31, mant!=0)
     if (std::isnan(v))
       std::printf("PASS %-24s NaN\n", "0x7E00 -> NaN");
     else {
@@ -102,7 +102,7 @@ int main() {
 
   {
     std::byte block[34];
-    const std::uint16_t d_bits = 0x3800; // 0.5 in fp16
+    const std::uint16_t d_bits = 0x3800;  // 0.5 in fp16
     std::memcpy(block, &d_bits, sizeof(d_bits));
     std::int8_t qs[32];
     for (int i = 0; i < 32; ++i) {
@@ -126,10 +126,9 @@ int main() {
                           -2.72f,  6.6f,     -7.0f,  0.03f,   -0.5f,    7.1f,  -4.4f, 1.9f,
                           -6.8f,   3.7f,     -0.03f, 5.05f,   -2.5f,    0.75f, -7.5f, 4.2f};
     float amax = 0.0f;
-    for (float v : xs)
-      amax = std::max(amax, std::fabs(v));
+    for (float v : xs) amax = std::max(amax, std::fabs(v));
     const float d = amax / 127.0f;
-    const std::uint16_t d_bits = 0x2C00; // 0.0625 in fp16, equals d exactly
+    const std::uint16_t d_bits = 0x2C00;  // 0.0625 in fp16, equals d exactly
     std::byte block[34];
     std::memcpy(block, &d_bits, sizeof(d_bits));
     for (int i = 0; i < 32; ++i) {
@@ -140,8 +139,7 @@ int main() {
     float out[32];
     dequant_row_q8_0(block, 32, out);
     float max_err = 0.0f;
-    for (int i = 0; i < 32; ++i)
-      max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
+    for (int i = 0; i < 32; ++i) max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
     check_le("q8_0 roundtrip", max_err, d * 0.5f + 1e-6f);
   }
 
@@ -151,11 +149,11 @@ int main() {
     // low nibble of byte j is element j, high nibble is element j+16, so a
     // distinct value per nibble catches a swapped nibble order.
     std::byte block[18];
-    const std::uint16_t d_bits = 0x3C00; // 1.0 in fp16
+    const std::uint16_t d_bits = 0x3C00;  // 1.0 in fp16
     std::memcpy(block, &d_bits, sizeof(d_bits));
     for (int j = 0; j < 16; ++j) {
-      const std::uint8_t lo = static_cast<std::uint8_t>(j);      // 0..15
-      const std::uint8_t hi = static_cast<std::uint8_t>(15 - j); // 15..0
+      const std::uint8_t lo = static_cast<std::uint8_t>(j);       // 0..15
+      const std::uint8_t hi = static_cast<std::uint8_t>(15 - j);  // 15..0
       block[2 + j] = static_cast<std::byte>(lo | (hi << 4));
     }
     float out[32];
@@ -177,10 +175,9 @@ int main() {
                           -0.125f, 0.75f,   -0.875f, 0.0f,   -0.5f,   0.875f, -0.75f,  0.25f,
                           -0.625f, 0.375f,  -0.25f,  0.5f,   -0.5f,   0.625f, -0.875f, 0.75f};
     float amax = 0.0f;
-    for (float v : xs)
-      amax = std::max(amax, std::fabs(v));
+    for (float v : xs) amax = std::max(amax, std::fabs(v));
     const float d = amax / 7.0f;
-    const std::uint16_t d_bits = 0x3000; // 0.125 in fp16, equals d exactly
+    const std::uint16_t d_bits = 0x3000;  // 0.125 in fp16, equals d exactly
     std::byte block[18];
     std::memcpy(block, &d_bits, sizeof(d_bits));
     for (int j = 0; j < 16; ++j) {
@@ -196,8 +193,7 @@ int main() {
     float out[32];
     dequant_row_q4_0(block, 32, out);
     float max_err = 0.0f;
-    for (int i = 0; i < 32; ++i)
-      max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
+    for (int i = 0; i < 32; ++i) max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
     check_le("q4_0 roundtrip", max_err, d + 1e-6f);
   }
 
@@ -206,14 +202,14 @@ int main() {
   {
     // qh carries the fifth bit per element; the pattern sets it for some
     // elements in each half and clears it for others.
-    const std::uint16_t d_bits = 0x3C00; // 1.0 in fp16
+    const std::uint16_t d_bits = 0x3C00;  // 1.0 in fp16
     const std::uint32_t qh = 0xAAAA5555u;
     std::byte block[22];
     std::memcpy(block, &d_bits, sizeof(d_bits));
     std::memcpy(block + 2, &qh, sizeof(qh));
     for (int j = 0; j < 16; ++j) {
-      const std::uint8_t lo = static_cast<std::uint8_t>(j);      // 0..15
-      const std::uint8_t hi = static_cast<std::uint8_t>(15 - j); // 15..0
+      const std::uint8_t lo = static_cast<std::uint8_t>(j);       // 0..15
+      const std::uint8_t hi = static_cast<std::uint8_t>(15 - j);  // 15..0
       block[6 + j] = static_cast<std::byte>(lo | (hi << 4));
     }
     float out[32];
@@ -239,7 +235,7 @@ int main() {
                           -2.5f, 1.75f, -3.75f, 0.5f,  -1.25f, 3.25f, -2.75f, 0.25f,
                           -0.5f, 2.75f, -1.75f, 2.0f,  -3.0f,  1.0f,  -2.25f, 3.5f};
     const float d = 0.25f;
-    const std::uint16_t d_bits = 0x3400; // 0.25 in fp16, equals d exactly
+    const std::uint16_t d_bits = 0x3400;  // 0.25 in fp16, equals d exactly
     std::byte block[22];
     std::memcpy(block, &d_bits, sizeof(d_bits));
     std::uint32_t qh = 0;
@@ -259,8 +255,7 @@ int main() {
     float out[32];
     dequant_row_q5_0(block, 32, out);
     float max_err = 0.0f;
-    for (int i = 0; i < 32; ++i)
-      max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
+    for (int i = 0; i < 32; ++i) max_err = std::max(max_err, std::fabs(out[i] - xs[i]));
     check_le("q5_0 roundtrip", max_err, 0.5f * d + 1e-6f);
   }
 
@@ -277,8 +272,7 @@ int main() {
   {
     const float d = 1.0f, dmin = 0.5f;
     std::uint8_t qn[256];
-    for (int e = 0; e < 256; ++e)
-      qn[e] = static_cast<std::uint8_t>(e % 16);
+    for (int e = 0; e < 256; ++e) qn[e] = static_cast<std::uint8_t>(e % 16);
 
     std::byte blk[144];
     std::memset(blk, 0, sizeof blk);
@@ -345,8 +339,7 @@ int main() {
     float out[256];
     dequant_row_q4_k(blk, 256, out);
     float max_err = 0.0f;
-    for (int e = 0; e < 256; ++e)
-      max_err = std::max(max_err, std::fabs(out[e] - xs[e]));
+    for (int e = 0; e < 256; ++e) max_err = std::max(max_err, std::fabs(out[e] - xs[e]));
     check_le("q4_k roundtrip", max_err, 0.5f * max_step + 1e-4f);
   }
 
@@ -355,11 +348,9 @@ int main() {
   {
     const float d = 0.5f;
     std::int8_t scales[16];
-    for (int i = 0; i < 16; ++i)
-      scales[i] = static_cast<std::int8_t>(i - 8);
+    for (int i = 0; i < 16; ++i) scales[i] = static_cast<std::int8_t>(i - 8);
     int qn[256];
-    for (int e = 0; e < 256; ++e)
-      qn[e] = (e % 64) - 32;
+    for (int e = 0; e < 256; ++e) qn[e] = (e % 64) - 32;
 
     std::byte blk[210];
     std::memset(blk, 0, sizeof blk);
@@ -402,8 +393,7 @@ int main() {
     // avoid scale 0 so the inverse step is finite; err bounded by half d*sc.
     const float d = 0.5f;
     std::int8_t scales[16];
-    for (int i = 0; i < 16; ++i)
-      scales[i] = static_cast<std::int8_t>(i < 8 ? i - 8 : i - 7);
+    for (int i = 0; i < 16; ++i) scales[i] = static_cast<std::int8_t>(i < 8 ? i - 8 : i - 7);
     float xs[256];
     float max_step = 0.0f;
     for (int e = 0; e < 256; ++e) {
@@ -445,8 +435,7 @@ int main() {
     float out[256];
     dequant_row_q6_k(blk, 256, out);
     float max_err = 0.0f;
-    for (int e = 0; e < 256; ++e)
-      max_err = std::max(max_err, std::fabs(out[e] - xs[e]));
+    for (int e = 0; e < 256; ++e) max_err = std::max(max_err, std::fabs(out[e] - xs[e]));
     check_le("q6_k roundtrip", max_err, 0.5f * max_step + 1e-3f);
   }
 
@@ -476,12 +465,10 @@ int main() {
 
   {
     float xs[32];
-    for (int i = 0; i < 32; ++i)
-      xs[i] = static_cast<float>(i - 16) * 0.5f;
-    xs[0] = 300.0f; // amax makes d well above one, forces clamp on the rest.
+    for (int i = 0; i < 32; ++i) xs[i] = static_cast<float>(i - 16) * 0.5f;
+    xs[0] = 300.0f;  // amax makes d well above one, forces clamp on the rest.
     float amax = 0.0f;
-    for (float v : xs)
-      amax = std::max(amax, std::fabs(v));
+    for (float v : xs) amax = std::max(amax, std::fabs(v));
     std::byte block[34];
     quantize_row_q8_0(xs, 32, block);
     std::uint16_t d_bits = 0;
@@ -492,8 +479,7 @@ int main() {
 
   {
     float xs[32];
-    for (int i = 0; i < 32; ++i)
-      xs[i] = -1.0f;
+    for (int i = 0; i < 32; ++i) xs[i] = -1.0f;
     xs[5] = 1.0f;
     std::byte block[34];
     quantize_row_q8_0(xs, 32, block);

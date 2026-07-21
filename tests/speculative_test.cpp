@@ -6,27 +6,27 @@
 
 #include "model/speculative.hpp"
 
-#include "gguf/gguf.hpp"
-#include "model/model.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <span>
 #include <vector>
 
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
+
 namespace {
 
 int g_failures = 0;
 
-void expect(bool ok, const char *what) {
+void expect(bool ok, const char* what) {
   if (!ok) {
     std::printf("FAIL %s\n", what);
     ++g_failures;
   }
 }
 
-std::int32_t argmax(const float *logits, std::size_t n) {
+std::int32_t argmax(const float* logits, std::size_t n) {
   std::int32_t best = 0;
   float bestv = logits[0];
   for (std::size_t i = 1; i < n; ++i)
@@ -51,7 +51,7 @@ std::int32_t draft_guess(std::int32_t x, std::int32_t wrong_mod) {
 // runs the speculative merge round by round against the oracle and returns the
 // merged token stream, which must match pure oracle greedy.
 std::vector<std::int32_t> simulate(std::int32_t seed, std::size_t k, std::size_t n,
-                                   std::int32_t wrong_mod, dbinfer::model::SpecStats *stats) {
+                                   std::int32_t wrong_mod, dbinfer::model::SpecStats* stats) {
   std::vector<std::int32_t> gen;
   std::int32_t last = seed;
   dbinfer::model::SpecStats st;
@@ -66,8 +66,7 @@ std::vector<std::int32_t> simulate(std::int32_t seed, std::size_t k, std::size_t
       proposals[i] = cur;
     }
     verified[0] = oracle(last);
-    for (std::size_t i = 0; i < k; ++i)
-      verified[i + 1] = oracle(proposals[i]);
+    for (std::size_t i = 0; i < k; ++i) verified[i + 1] = oracle(proposals[i]);
 
     merged.clear();
     const std::size_t accepted = dbinfer::model::speculative_merge(
@@ -85,8 +84,7 @@ std::vector<std::int32_t> simulate(std::int32_t seed, std::size_t k, std::size_t
       gen.push_back(tok);
     }
   }
-  if (stats != nullptr)
-    *stats = st;
+  if (stats != nullptr) *stats = st;
   return gen;
 }
 
@@ -134,32 +132,28 @@ void test_merge_logic() {
   // merged stream equals oracle greedy across seeds, k, and divergence rates.
   for (std::int32_t seed : {1, 42, 77}) {
     for (std::size_t k : {1u, 4u, 8u}) {
-      for (std::int32_t wrong : {0, 2, 3, 1}) { // 0 = perfect draft, 1 = always wrong
+      for (std::int32_t wrong : {0, 2, 3, 1}) {  // 0 = perfect draft, 1 = always wrong
         dbinfer::model::SpecStats st;
         std::vector<std::int32_t> spec = simulate(seed, k, 50, wrong, &st);
         std::vector<std::int32_t> ref = oracle_greedy(seed, 50);
         bool same = spec.size() == ref.size();
-        for (std::size_t i = 0; same && i < ref.size(); ++i)
-          same = spec[i] == ref[i];
+        for (std::size_t i = 0; same && i < ref.size(); ++i) same = spec[i] == ref[i];
         expect(same, "synthetic merged stream equals oracle greedy");
-        if (wrong == 0)
-          expect(st.accepted == st.proposed, "perfect draft accepts every token");
-        if (wrong == 1)
-          expect(st.accepted == 0, "always-wrong draft accepts nothing");
+        if (wrong == 0) expect(st.accepted == st.proposed, "perfect draft accepts every token");
+        if (wrong == 1) expect(st.accepted == 0, "always-wrong draft accepts nothing");
       }
     }
   }
 }
 
 #if defined(DBINFER_SPEC_TARGET) && defined(DBINFER_SPEC_DRAFT)
-std::vector<std::int32_t> ref_greedy(dbinfer::model::Model &m, std::span<const std::int32_t> prompt,
+std::vector<std::int32_t> ref_greedy(dbinfer::model::Model& m, std::span<const std::int32_t> prompt,
                                      std::size_t n) {
   m.reset_kv();
   const std::size_t vocab = m.config().vocab_size;
-  const float *logits = nullptr;
+  const float* logits = nullptr;
   std::int32_t pos = 0;
-  for (std::int32_t id : prompt)
-    logits = m.forward(id, pos++);
+  for (std::int32_t id : prompt) logits = m.forward(id, pos++);
   std::vector<std::int32_t> out;
   while (out.size() < n) {
     const std::int32_t next = argmax(logits, vocab);
@@ -199,8 +193,7 @@ void test_end_to_end() {
     std::vector<std::int32_t> spec = dbinfer::model::speculative_generate(
         *target, *draft, std::span<const std::int32_t>(prompt, 8), k, n, -1, &st);
     bool same = spec.size() == ref.size();
-    for (std::size_t i = 0; same && i < ref.size(); ++i)
-      same = spec[i] == ref[i];
+    for (std::size_t i = 0; same && i < ref.size(); ++i) same = spec[i] == ref[i];
     if (!same) {
       std::printf("FAIL k=%zu speculative stream differs from target greedy\n", k);
       ++g_failures;
@@ -212,7 +205,7 @@ void test_end_to_end() {
 }
 #endif
 
-} // namespace
+}  // namespace
 
 int main() {
   test_merge_logic();

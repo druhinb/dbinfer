@@ -1,7 +1,3 @@
-#include "model/model.hpp"
-
-#include "gguf/gguf.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -9,6 +5,9 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
 
 // q8_0 forward-pass integration check against the fp32 reference logits.
 //
@@ -34,9 +33,9 @@ namespace {
 
 int g_failures = 0;
 
-std::vector<float> load_bin(const char *name, std::size_t expect_n) {
+std::vector<float> load_bin(const char* name, std::size_t expect_n) {
   std::string path = std::string(DBINFER_GOLDEN_DIR) + "/" + name;
-  std::FILE *f = std::fopen(path.c_str(), "rb");
+  std::FILE* f = std::fopen(path.c_str(), "rb");
   if (f == nullptr) {
     std::printf("FAIL cannot open %s\n", path.c_str());
     ++g_failures;
@@ -53,15 +52,14 @@ std::vector<float> load_bin(const char *name, std::size_t expect_n) {
   return v;
 }
 
-std::size_t argmax(const float *v, std::size_t n) {
+std::size_t argmax(const float* v, std::size_t n) {
   std::size_t best = 0;
   for (std::size_t i = 1; i < n; ++i)
-    if (v[i] > v[best])
-      best = i;
+    if (v[i] > v[best]) best = i;
   return best;
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   auto loaded = dbinfer::gguf::load(DBINFER_QUANT_Q8_GGUF);
@@ -74,8 +72,8 @@ int main() {
     std::printf("FAIL model load: %s\n", dbinfer::gguf::to_string(mret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model &model = *mret;
-  const auto &cfg = model.config();
+  dbinfer::model::Model& model = *mret;
+  const auto& cfg = model.config();
 
   const std::int32_t ids[6] = {40, 1079, 264, 4128, 1614, 13};
   const std::int32_t positions[6] = {0, 1, 2, 3, 4, 5};
@@ -83,12 +81,11 @@ int main() {
   const std::size_t vocab = cfg.vocab_size;
 
   auto ref = load_bin("logits.bin", seq * vocab);
-  if (ref.empty())
-    return 1;
+  if (ref.empty()) return 1;
 
   std::vector<float> logits(seq * vocab);
   for (std::size_t s = 0; s < seq; ++s) {
-    const float *l = model.forward(ids[s], positions[s]);
+    const float* l = model.forward(ids[s], positions[s]);
     std::copy(l, l + vocab, logits.data() + s * vocab);
   }
 

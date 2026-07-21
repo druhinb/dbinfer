@@ -1,11 +1,11 @@
 #ifndef DBINFER_DBMF_DBMF_HPP
 #define DBINFER_DBMF_DBMF_HPP
 
-#include "gguf/gguf.hpp"
-
 #include <cstdint>
 #include <expected>
 #include <string_view>
+
+#include "gguf/gguf.hpp"
 
 // dbmf: dbinfer model format. a mmap-friendly container for the same weights
 // and hyperparameters a gguf carries, restructured for this engine.
@@ -38,37 +38,38 @@ namespace dbinfer::dbmf {
 // 'DBMF' little-endian.
 inline constexpr std::uint32_t kMagic = 0x464D4244u;
 inline constexpr std::uint32_t kVersion = 1;
-inline constexpr std::uint64_t kAlignment = 16384; // Apple Silicon page size
+inline constexpr std::uint64_t kAlignment = 16384;  // Apple Silicon page size
 inline constexpr std::uint64_t kHeaderSize = 128;
 inline constexpr std::uint64_t kRecordSize = 128;
 
 // header/tensor flag bits.
-inline constexpr std::uint32_t kFlagCompressed = 1u; // tensor: entropy-coded f16
+inline constexpr std::uint32_t kFlagCompressed = 1u;  // tensor: entropy-coded f16
 
 struct ConvertOptions {
-  bool compress = false; // entropy-code f16 tensors
+  bool compress = false;  // entropy-code f16 tensors
 };
 
 struct ReadOptions {
-  bool verify = false; // recompute and check every tensor's xxhash64 at load
+  bool verify = false;  // recompute and check every tensor's xxhash64 at load
 };
 
 // writes src to path in the dbmf container. tensor bytes are copied verbatim
 // from src's mapping (once, necessarily). fails with an actionable error on any
 // io problem.
-[[nodiscard]] std::expected<void, gguf::Error>
-convert(const gguf::GgufFile &src, std::string_view path, const ConvertOptions &opts = {});
+[[nodiscard]] std::expected<void, gguf::Error> convert(const gguf::GgufFile& src,
+                                                       std::string_view path,
+                                                       const ConvertOptions& opts = {});
 
 // mmaps and parses a dbmf file into the same in-memory shape gguf::load yields.
 // every field is bounds-checked against the file size with overflow guards.
 [[nodiscard]] std::expected<gguf::GgufFile, gguf::Error> read(std::string_view path,
-                                                              const ReadOptions &opts = {});
+                                                              const ReadOptions& opts = {});
 
 // sniffs the leading magic and dispatches to gguf::load or dbmf::read, so the
 // engine loads either format transparently.
 [[nodiscard]] std::expected<gguf::GgufFile, gguf::Error> load_model(std::string_view path,
-                                                                    const ReadOptions &opts = {});
+                                                                    const ReadOptions& opts = {});
 
-} // namespace dbinfer::dbmf
+}  // namespace dbinfer::dbmf
 
-#endif // DBINFER_DBMF_DBMF_HPP
+#endif  // DBINFER_DBMF_DBMF_HPP

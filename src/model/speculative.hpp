@@ -1,12 +1,12 @@
 #ifndef DBINFER_MODEL_SPECULATIVE_HPP
 #define DBINFER_MODEL_SPECULATIVE_HPP
 
-#include "model/model.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
+
+#include "model/model.hpp"
 
 namespace dbinfer::model {
 
@@ -17,7 +17,7 @@ namespace dbinfer::model {
 // token (the correction at the first mismatch, or the bonus when all k accept)
 // to out, and returns the count of accepted draft tokens.
 std::size_t speculative_merge(std::span<const std::int32_t> draft,
-                              std::span<const std::int32_t> target, std::vector<std::int32_t> &out);
+                              std::span<const std::int32_t> target, std::vector<std::int32_t>& out);
 
 struct SpecStats {
   std::size_t proposed = 0;
@@ -31,10 +31,10 @@ struct SpecStats {
 // stream is identical to pure target greedy. both models must use the default
 // dense fp32 KV cache and share a vocabulary. generates up to n tokens, halting
 // at eos (which is excluded from the result). resets both KV caches first.
-std::vector<std::int32_t> speculative_generate(Model &target, Model &draft,
+std::vector<std::int32_t> speculative_generate(Model& target, Model& draft,
                                                std::span<const std::int32_t> prompt, std::size_t k,
-                                               std::size_t n, std::int32_t eos, SpecStats *stats);
+                                               std::size_t n, std::int32_t eos, SpecStats* stats);
 
-} // namespace dbinfer::model
+}  // namespace dbinfer::model
 
-#endif // DBINFER_MODEL_SPECULATIVE_HPP
+#endif  // DBINFER_MODEL_SPECULATIVE_HPP

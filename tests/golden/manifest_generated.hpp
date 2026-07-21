@@ -7,32 +7,49 @@
 namespace dbinfer::golden {
 
 struct Entry {
-  const char *name;
-  const char *relpath;
+  const char* name;
+  const char* relpath;
   std::size_t n_elements;
-  const char *sha256hex;
+  const char* sha256hex;
 };
 
 inline constexpr Entry kEntries[] = {
-    {"embedding", "embedding.bin", 5376, "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"},
-    {"rmsnorm_in", "rmsnorm_in.bin", 5376, "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"},
-    {"rmsnorm_out", "rmsnorm_out.bin", 5376, "7061b0c3a1c323df3a7431c9e829e0313b77010cf55e64920a9c245b773cea20"},
-    {"rope_q_in", "rope_q_in.bin", 5376, "dfc409b27811563fef7f5a339513743f628965d295612fda1d47b2fa818f59ec"},
-    {"rope_q_out", "rope_q_out.bin", 5376, "46646b9c24b480729e20c69d4d26227b423da75853398aa710705b5e2265af28"},
-    {"rope_k_in", "rope_k_in.bin", 768, "46f2e2b7d0ee2ae4f1824ae7f51ecd70915c436e3be174c7e33ba278e47d4f90"},
-    {"rope_k_out", "rope_k_out.bin", 768, "4d54b435770897e3233457789f98f8b609c151b06eeecdc1f07ac34ec866a383"},
-    {"attn_head0_out", "attn_head0_out.bin", 384, "9189f897ecf778c3299449fd8a0d188d813859baba43923eef02ab559a3bd307"},
-    {"layer0_out", "layer0_out.bin", 5376, "84cd66916c4aea4ab4718675e1a42f2bb8a03f665587e06b51c11d0b9b33f339"},
-    {"swiglu_in", "swiglu_in.bin", 5376, "19d12733ece64684c21aa22bef8c750c1964e3dc111f663266a1cfe01651c928"},
-    {"swiglu_out", "swiglu_out.bin", 5376, "db691f3d440f886cf096583ebead8ffd626fa903535921159b3f294d19def988"},
-    {"logits", "logits.bin", 911616, "02d7178b32f6dd9e6dc75cb5c729a4dd1a8721d52802dbb4b52046066fb9738c"},
-    {"silu_in", "silu_in.bin", 4096, "afb9825a6df7150ed3c35dbaed712813eced3e3fd34175de6ef3db4921f6127a"},
-    {"silu_out", "silu_out.bin", 4096, "775501cdac6264d7418e116c5d0289881a4c4b9b4f0600e3f36ef0c3ba66de83"},
-    {"softmax_in", "softmax_in.bin", 4096, "8304b058827d990db61da641c9458d2e9dfc6cdcaad2c2f374ccec5b30e6b45f"},
-    {"softmax_out", "softmax_out.bin", 4096, "fa23f523563455a257e6bfc34bcb36a22c6663fea13b70b6ce34760579869092"},
-    {"rmsnorm_weight", "rmsnorm_weight.bin", 896, "32c7d51cd0958f1f1771174192db341f9770516d7595a2f0fd18a4d78bd5aba3"},
+    {"embedding", "embedding.bin", 5376,
+     "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"},
+    {"rmsnorm_in", "rmsnorm_in.bin", 5376,
+     "2c068ba57a34a8844d3940bc5c3084e34e48cd28d5b907ef3d83790188d394e6"},
+    {"rmsnorm_out", "rmsnorm_out.bin", 5376,
+     "7061b0c3a1c323df3a7431c9e829e0313b77010cf55e64920a9c245b773cea20"},
+    {"rope_q_in", "rope_q_in.bin", 5376,
+     "dfc409b27811563fef7f5a339513743f628965d295612fda1d47b2fa818f59ec"},
+    {"rope_q_out", "rope_q_out.bin", 5376,
+     "46646b9c24b480729e20c69d4d26227b423da75853398aa710705b5e2265af28"},
+    {"rope_k_in", "rope_k_in.bin", 768,
+     "46f2e2b7d0ee2ae4f1824ae7f51ecd70915c436e3be174c7e33ba278e47d4f90"},
+    {"rope_k_out", "rope_k_out.bin", 768,
+     "4d54b435770897e3233457789f98f8b609c151b06eeecdc1f07ac34ec866a383"},
+    {"attn_head0_out", "attn_head0_out.bin", 384,
+     "9189f897ecf778c3299449fd8a0d188d813859baba43923eef02ab559a3bd307"},
+    {"layer0_out", "layer0_out.bin", 5376,
+     "84cd66916c4aea4ab4718675e1a42f2bb8a03f665587e06b51c11d0b9b33f339"},
+    {"swiglu_in", "swiglu_in.bin", 5376,
+     "19d12733ece64684c21aa22bef8c750c1964e3dc111f663266a1cfe01651c928"},
+    {"swiglu_out", "swiglu_out.bin", 5376,
+     "db691f3d440f886cf096583ebead8ffd626fa903535921159b3f294d19def988"},
+    {"logits", "logits.bin", 911616,
+     "02d7178b32f6dd9e6dc75cb5c729a4dd1a8721d52802dbb4b52046066fb9738c"},
+    {"silu_in", "silu_in.bin", 4096,
+     "afb9825a6df7150ed3c35dbaed712813eced3e3fd34175de6ef3db4921f6127a"},
+    {"silu_out", "silu_out.bin", 4096,
+     "775501cdac6264d7418e116c5d0289881a4c4b9b4f0600e3f36ef0c3ba66de83"},
+    {"softmax_in", "softmax_in.bin", 4096,
+     "8304b058827d990db61da641c9458d2e9dfc6cdcaad2c2f374ccec5b30e6b45f"},
+    {"softmax_out", "softmax_out.bin", 4096,
+     "fa23f523563455a257e6bfc34bcb36a22c6663fea13b70b6ce34760579869092"},
+    {"rmsnorm_weight", "rmsnorm_weight.bin", 896,
+     "32c7d51cd0958f1f1771174192db341f9770516d7595a2f0fd18a4d78bd5aba3"},
 };
 
-} // namespace dbinfer::golden
+}  // namespace dbinfer::golden
 
-#endif // DBINFER_TESTS_GOLDEN_MANIFEST_GENERATED_HPP
+#endif  // DBINFER_TESTS_GOLDEN_MANIFEST_GENERATED_HPP

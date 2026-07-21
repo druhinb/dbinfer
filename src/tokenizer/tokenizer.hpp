@@ -1,8 +1,6 @@
 #ifndef DBINFER_TOKENIZER_TOKENIZER_HPP
 #define DBINFER_TOKENIZER_TOKENIZER_HPP
 
-#include "gguf/gguf.hpp"
-
 #include <cstdint>
 #include <expected>
 #include <span>
@@ -12,12 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include "gguf/gguf.hpp"
+
 namespace dbinfer::tokenizer {
 
 // boost-style hash_combine for a pair of strings, so BpeRanks can be an
 // unordered_map without a custom bucket structure.
 struct PairHash {
-  std::size_t operator()(const std::pair<std::string, std::string> &p) const noexcept {
+  std::size_t operator()(const std::pair<std::string, std::string>& p) const noexcept {
     std::hash<std::string> h;
     std::size_t a = h(p.first);
     std::size_t b = h(p.second);
@@ -37,15 +37,15 @@ std::vector<std::string> pretokenize(std::string_view text);
 // runs BPE merges on one byte-encoded word using ranks (lower rank = merge
 // earlier), appending the resulting vocab ids to out. Falls back to
 // single-byte tokens for any final piece missing from vocab.
-void bpe_word(const std::string &word, const BpeRanks &ranks, const Vocab &vocab,
-              std::vector<std::int32_t> &out);
+void bpe_word(const std::string& word, const BpeRanks& ranks, const Vocab& vocab,
+              std::vector<std::int32_t>& out);
 
 // GPT2-family BPE tokenizer, built entirely from a GGUF file's
 // tokenizer.ggml.* metadata (vocab, merge ranks, special token ids). Only
 // the "gpt2" tokenizer model is supported; from_gguf rejects anything else.
 class Tokenizer {
-public:
-  static std::expected<Tokenizer, gguf::Error> from_gguf(const gguf::GgufFile &file);
+ public:
+  static std::expected<Tokenizer, gguf::Error> from_gguf(const gguf::GgufFile& file);
 
   // pretokenizes and BPE-encodes text, optionally prefixing bos_id() when
   // the model's metadata says to add one.
@@ -57,7 +57,7 @@ public:
   std::int32_t bos_id() const { return bos_id_; }
   std::int32_t eos_id() const { return eos_id_; }
 
-private:
+ private:
   std::vector<std::string> id_to_token_;
   Vocab token_to_id_;
   BpeRanks ranks_;
@@ -66,6 +66,6 @@ private:
   bool add_bos_ = false;
 };
 
-} // namespace dbinfer::tokenizer
+}  // namespace dbinfer::tokenizer
 
-#endif // DBINFER_TOKENIZER_TOKENIZER_HPP
+#endif  // DBINFER_TOKENIZER_TOKENIZER_HPP

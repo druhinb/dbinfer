@@ -36,28 +36,27 @@ double seconds(clock_type::time_point a, clock_type::time_point b) {
 
 // calls/s of one quant matvec at m=1 on a synthetic weight of shape [out, in].
 template <typename Fn>
-double kernel_rate(Fn fn, const std::byte *W, const dbinfer::tensor::BlockQ8_0 *xq, float *y,
+double kernel_rate(Fn fn, const std::byte* W, const dbinfer::tensor::BlockQ8_0* xq, float* y,
                    std::size_t out, std::size_t in) {
   constexpr int kIters = 200;
   std::vector<double> rates;
   for (int r = 0; r < 5; ++r) {
     const auto t0 = clock_type::now();
-    for (int i = 0; i < kIters; ++i)
-      fn(W, xq, y, out, in);
+    for (int i = 0; i < kIters; ++i) fn(W, xq, y, out, in);
     rates.push_back(static_cast<double>(kIters) / seconds(t0, clock_type::now()));
   }
   return median(rates);
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr, "usage: %s <model.gguf> [prefill=512] [decode=256] [gpu_layers=0]\n",
                  argv[0]);
     return 2;
   }
-  const char *path = argv[1];
+  const char* path = argv[1];
   const int n_pre = argc > 2 ? std::atoi(argv[2]) : 512;
   const int n_dec = argc > 3 ? std::atoi(argv[3]) : 256;
   const int gpu_layers = argc > 4 ? std::atoi(argv[4]) : 0;
@@ -73,10 +72,10 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "error: load model: %s\n", dbinfer::gguf::to_string(mret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model &model = *mret;
-  const auto &cfg = model.config();
+  dbinfer::model::Model& model = *mret;
+  const auto& cfg = model.config();
 
-  const dbinfer::tensor::CpuFeatures &feat = dbinfer::tensor::cpu_features();
+  const dbinfer::tensor::CpuFeatures& feat = dbinfer::tensor::cpu_features();
   std::printf("model %s  dotprod=%d i8mm=%d\n", path, feat.dotprod, feat.i8mm);
 
   const std::int32_t tok = 40;
@@ -109,7 +108,7 @@ int main(int argc, char **argv) {
   // gpu decode tok/s over n_dec steady-state tokens, wall(n_pre+n_dec)-wall(n_pre),
   // single host thread. prefill n_pre tokens first so decode measures the loop.
   if (gpu_layers > 0) {
-    dbinfer::backend::Backend *be = dbinfer::backend::metal_backend();
+    dbinfer::backend::Backend* be = dbinfer::backend::metal_backend();
     const std::size_t n = std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), cfg.n_layers);
     if (be == nullptr || !model.kv_dense_f32() || !model.layers_offloadable(n) ||
         !model.set_gpu_offload(be, n)) {
@@ -121,11 +120,9 @@ int main(int argc, char **argv) {
     for (int run = 0; run < 3; ++run) {
       model.reset_kv();
       std::int32_t pos = 0;
-      for (int i = 0; i < n_pre; ++i)
-        model.forward(tok, pos++);
+      for (int i = 0; i < n_pre; ++i) model.forward(tok, pos++);
       const auto t1 = clock_type::now();
-      for (int i = 0; i < n_dec; ++i)
-        model.forward(tok, pos++);
+      for (int i = 0; i < n_dec; ++i) model.forward(tok, pos++);
       dec_rates.push_back(static_cast<double>(n_dec) / seconds(t1, clock_type::now()));
     }
     std::printf("gpu-layers %zu: decode %.2f tok/s (median of 3, %d tokens)\n", n,
@@ -141,11 +138,9 @@ int main(int argc, char **argv) {
     for (int run = 0; run < 5; ++run) {
       std::int32_t pos = 0;
       const auto t0 = clock_type::now();
-      for (int i = 0; i < n_pre; ++i)
-        model.forward(tok, pos++);
+      for (int i = 0; i < n_pre; ++i) model.forward(tok, pos++);
       const auto t1 = clock_type::now();
-      for (int i = 0; i < n_dec; ++i)
-        model.forward(tok, pos++);
+      for (int i = 0; i < n_dec; ++i) model.forward(tok, pos++);
       const auto t2 = clock_type::now();
       pre_rates.push_back(static_cast<double>(n_pre) / seconds(t0, t1));
       dec_rates.push_back(static_cast<double>(n_dec) / seconds(t1, t2));
@@ -167,27 +162,25 @@ int main(int argc, char **argv) {
   std::uniform_real_distribution<float> act(-4.0f, 4.0f);
 
   std::vector<float> x(in);
-  for (float &v : x)
-    v = act(rng);
+  for (float& v : x) v = act(rng);
   std::vector<dbinfer::tensor::BlockQ8_0> xq(nb);
-  dbinfer::tensor::quantize_row_q8_0(x.data(), in, reinterpret_cast<std::byte *>(xq.data()));
+  dbinfer::tensor::quantize_row_q8_0(x.data(), in, reinterpret_cast<std::byte*>(xq.data()));
   std::vector<float> y(out);
 
   std::vector<dbinfer::tensor::BlockQ8_0> w8(out * nb);
-  for (auto &blk : w8) {
+  for (auto& blk : w8) {
     blk.d = dbinfer::tensor::f32_to_f16(scale(rng));
     for (std::size_t i = 0; i < dbinfer::tensor::kBlockSize; ++i)
       blk.qs[i] = static_cast<std::int8_t>(q8(rng));
   }
-  const std::byte *w8b = reinterpret_cast<const std::byte *>(w8.data());
+  const std::byte* w8b = reinterpret_cast<const std::byte*>(w8.data());
 
   std::vector<std::byte> w4(out * nb * sizeof(dbinfer::tensor::BlockQ4_0));
   for (std::size_t k = 0; k < out * nb; ++k) {
-    std::byte *blk = w4.data() + k * sizeof(dbinfer::tensor::BlockQ4_0);
+    std::byte* blk = w4.data() + k * sizeof(dbinfer::tensor::BlockQ4_0);
     const std::uint16_t d = dbinfer::tensor::f32_to_f16(scale(rng));
     std::memcpy(blk, &d, sizeof(d));
-    for (std::size_t j = 0; j < 16; ++j)
-      blk[2 + j] = static_cast<std::byte>(byte(rng));
+    for (std::size_t j = 0; j < 16; ++j) blk[2 + j] = static_cast<std::byte>(byte(rng));
   }
 
   std::printf("kernel microbench [out=%zu in=%zu] m=1:\n", out, in);

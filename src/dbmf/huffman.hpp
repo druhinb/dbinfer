@@ -1,13 +1,13 @@
 #ifndef DBINFER_DBMF_HUFFMAN_HPP
 #define DBINFER_DBMF_HUFFMAN_HPP
 
-#include "gguf/gguf.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <span>
 #include <vector>
+
+#include "gguf/gguf.hpp"
 
 namespace dbinfer::dbmf {
 
@@ -18,7 +18,7 @@ namespace dbinfer::dbmf {
 
 struct CompressResult {
   std::vector<std::byte> bytes;
-  bool compressed = false; // false when coding did not shrink the input
+  bool compressed = false;  // false when coding did not shrink the input
 };
 
 // raw is the verbatim f16 bytes (even length). returns compressed=false when
@@ -31,6 +31,6 @@ CompressResult compress_f16(std::span<const std::byte> raw);
 std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
                                                 std::span<std::byte> out);
 
-} // namespace dbinfer::dbmf
+}  // namespace dbinfer::dbmf
 
-#endif // DBINFER_DBMF_HUFFMAN_HPP
+#endif  // DBINFER_DBMF_HUFFMAN_HPP

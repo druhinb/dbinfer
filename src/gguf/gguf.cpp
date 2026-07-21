@@ -1,93 +1,93 @@
 #include "gguf/gguf.hpp"
 
-#include "try.hpp"
-
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <optional>
 
+#include "try.hpp"
+
 namespace dbinfer::gguf {
 
-const char *to_string(GgmlType type) {
+const char* to_string(GgmlType type) {
   switch (type) {
-  case GgmlType::F32:
-    return "F32";
-  case GgmlType::F16:
-    return "F16";
-  case GgmlType::Q4_0:
-    return "Q4_0";
-  case GgmlType::Q4_1:
-    return "Q4_1";
-  case GgmlType::Q5_0:
-    return "Q5_0";
-  case GgmlType::Q5_1:
-    return "Q5_1";
-  case GgmlType::Q8_0:
-    return "Q8_0";
-  case GgmlType::Q8_1:
-    return "Q8_1";
-  case GgmlType::Q2_K:
-    return "Q2_K";
-  case GgmlType::Q3_K:
-    return "Q3_K";
-  case GgmlType::Q4_K:
-    return "Q4_K";
-  case GgmlType::Q5_K:
-    return "Q5_K";
-  case GgmlType::Q6_K:
-    return "Q6_K";
-  case GgmlType::Q8_K:
-    return "Q8_K";
-  case GgmlType::I8:
-    return "I8";
-  case GgmlType::I16:
-    return "I16";
-  case GgmlType::I32:
-    return "I32";
-  case GgmlType::I64:
-    return "I64";
-  case GgmlType::F64:
-    return "F64";
-  case GgmlType::BF16:
-    return "BF16";
+    case GgmlType::F32:
+      return "F32";
+    case GgmlType::F16:
+      return "F16";
+    case GgmlType::Q4_0:
+      return "Q4_0";
+    case GgmlType::Q4_1:
+      return "Q4_1";
+    case GgmlType::Q5_0:
+      return "Q5_0";
+    case GgmlType::Q5_1:
+      return "Q5_1";
+    case GgmlType::Q8_0:
+      return "Q8_0";
+    case GgmlType::Q8_1:
+      return "Q8_1";
+    case GgmlType::Q2_K:
+      return "Q2_K";
+    case GgmlType::Q3_K:
+      return "Q3_K";
+    case GgmlType::Q4_K:
+      return "Q4_K";
+    case GgmlType::Q5_K:
+      return "Q5_K";
+    case GgmlType::Q6_K:
+      return "Q6_K";
+    case GgmlType::Q8_K:
+      return "Q8_K";
+    case GgmlType::I8:
+      return "I8";
+    case GgmlType::I16:
+      return "I16";
+    case GgmlType::I32:
+      return "I32";
+    case GgmlType::I64:
+      return "I64";
+    case GgmlType::F64:
+      return "F64";
+    case GgmlType::BF16:
+      return "BF16";
   }
   return "UNKNOWN";
 }
 
-const char *to_string(MetaType type) {
+const char* to_string(MetaType type) {
   switch (type) {
-  case MetaType::UInt8:
-    return "UINT8";
-  case MetaType::Int8:
-    return "INT8";
-  case MetaType::UInt16:
-    return "UINT16";
-  case MetaType::Int16:
-    return "INT16";
-  case MetaType::UInt32:
-    return "UINT32";
-  case MetaType::Int32:
-    return "INT32";
-  case MetaType::Float32:
-    return "FLOAT32";
-  case MetaType::Bool:
-    return "BOOL";
-  case MetaType::String:
-    return "STRING";
-  case MetaType::Array:
-    return "ARRAY";
-  case MetaType::UInt64:
-    return "UINT64";
-  case MetaType::Int64:
-    return "INT64";
-  case MetaType::Float64:
-    return "FLOAT64";
+    case MetaType::UInt8:
+      return "UINT8";
+    case MetaType::Int8:
+      return "INT8";
+    case MetaType::UInt16:
+      return "UINT16";
+    case MetaType::Int16:
+      return "INT16";
+    case MetaType::UInt32:
+      return "UINT32";
+    case MetaType::Int32:
+      return "INT32";
+    case MetaType::Float32:
+      return "FLOAT32";
+    case MetaType::Bool:
+      return "BOOL";
+    case MetaType::String:
+      return "STRING";
+    case MetaType::Array:
+      return "ARRAY";
+    case MetaType::UInt64:
+      return "UINT64";
+    case MetaType::Int64:
+      return "INT64";
+    case MetaType::Float64:
+      return "FLOAT64";
   }
   return "UNKNOWN";
 }
 
-std::string to_string(const Error &err) {
+std::string to_string(const Error& err) {
   return err.file + ":" + std::to_string(err.offset) + ": " + err.message;
 }
 
@@ -95,46 +95,46 @@ std::string to_string(const Error &err) {
 // K-quant sizes (QK_K=256) taken from ggml's block struct layouts.
 TypeInfo type_info(GgmlType t) {
   switch (t) {
-  case GgmlType::F32:
-    return {1, 4, true};
-  case GgmlType::F16:
-    return {1, 2, true};
-  case GgmlType::Q4_0:
-    return {32, 18, true};
-  case GgmlType::Q4_1:
-    return {32, 20, true};
-  case GgmlType::Q5_0:
-    return {32, 22, true};
-  case GgmlType::Q5_1:
-    return {32, 24, true};
-  case GgmlType::Q8_0:
-    return {32, 34, true};
-  case GgmlType::Q8_1:
-    return {32, 36, true};
-  case GgmlType::Q2_K:
-    return {256, 84, true};
-  case GgmlType::Q3_K:
-    return {256, 110, true};
-  case GgmlType::Q4_K:
-    return {256, 144, true};
-  case GgmlType::Q5_K:
-    return {256, 176, true};
-  case GgmlType::Q6_K:
-    return {256, 210, true};
-  case GgmlType::Q8_K:
-    return {256, 292, true};
-  case GgmlType::I8:
-    return {1, 1, true};
-  case GgmlType::I16:
-    return {1, 2, true};
-  case GgmlType::I32:
-    return {1, 4, true};
-  case GgmlType::I64:
-    return {1, 8, true};
-  case GgmlType::F64:
-    return {1, 8, true};
-  case GgmlType::BF16:
-    return {1, 2, true};
+    case GgmlType::F32:
+      return {1, 4, true};
+    case GgmlType::F16:
+      return {1, 2, true};
+    case GgmlType::Q4_0:
+      return {32, 18, true};
+    case GgmlType::Q4_1:
+      return {32, 20, true};
+    case GgmlType::Q5_0:
+      return {32, 22, true};
+    case GgmlType::Q5_1:
+      return {32, 24, true};
+    case GgmlType::Q8_0:
+      return {32, 34, true};
+    case GgmlType::Q8_1:
+      return {32, 36, true};
+    case GgmlType::Q2_K:
+      return {256, 84, true};
+    case GgmlType::Q3_K:
+      return {256, 110, true};
+    case GgmlType::Q4_K:
+      return {256, 144, true};
+    case GgmlType::Q5_K:
+      return {256, 176, true};
+    case GgmlType::Q6_K:
+      return {256, 210, true};
+    case GgmlType::Q8_K:
+      return {256, 292, true};
+    case GgmlType::I8:
+      return {1, 1, true};
+    case GgmlType::I16:
+      return {1, 2, true};
+    case GgmlType::I32:
+      return {1, 4, true};
+    case GgmlType::I64:
+      return {1, 8, true};
+    case GgmlType::F64:
+      return {1, 8, true};
+    case GgmlType::BF16:
+      return {1, 2, true};
   }
   return {0, 0, false};
 }
@@ -154,9 +154,9 @@ std::uint64_t align_up(std::uint64_t x, std::uint64_t a) { return (x + a - 1) / 
 // an Error, so callers can TRY() their way through the format without
 // separately tracking how much of the buffer is left.
 struct Cursor {
-  const std::byte *base;
+  const std::byte* base;
   std::uint64_t size;
-  const std::string &path;
+  const std::string& path;
   std::uint64_t pos = 0;
 
   Error eof(std::uint64_t need) const {
@@ -167,7 +167,8 @@ struct Cursor {
 
   // memcpy rather than a reinterpret_cast load: the mmap'd bytes are not
   // guaranteed aligned for T, and a misaligned typed access is UB.
-  template <typename T> std::expected<T, Error> read_scalar() {
+  template <typename T>
+  std::expected<T, Error> read_scalar() {
     if (pos + sizeof(T) > size) {
       return std::unexpected(eof(sizeof(T)));
     }
@@ -182,86 +183,83 @@ struct Cursor {
     if (len > size - pos) {
       return std::unexpected(eof(len));
     }
-    std::string s(reinterpret_cast<const char *>(base + pos), static_cast<std::size_t>(len));
+    std::string s(reinterpret_cast<const char*>(base + pos), static_cast<std::size_t>(len));
     pos += len;
     return s;
   }
 };
 
-template <typename T> std::expected<MetaValue, Error> read_meta_scalar(Cursor &c) {
+template <typename T>
+std::expected<MetaValue, Error> read_meta_scalar(Cursor& c) {
   return MetaValue{TRY(c.read_scalar<T>())};
 }
 
 // reads one metadata value of the given type, recursing into read_meta_value
 // for array elements. GGUF arrays are flat (scalars only), so the recursive
 // call can never see MetaType::Array again; that case is rejected below.
-std::expected<MetaValue, Error> read_meta_value(Cursor &c, MetaType type) {
+std::expected<MetaValue, Error> read_meta_value(Cursor& c, MetaType type) {
   switch (type) {
-  case MetaType::UInt8:
-    return read_meta_scalar<std::uint8_t>(c);
-  case MetaType::Int8:
-    return read_meta_scalar<std::int8_t>(c);
-  case MetaType::UInt16:
-    return read_meta_scalar<std::uint16_t>(c);
-  case MetaType::Int16:
-    return read_meta_scalar<std::int16_t>(c);
-  case MetaType::UInt32:
-    return read_meta_scalar<std::uint32_t>(c);
-  case MetaType::Int32:
-    return read_meta_scalar<std::int32_t>(c);
-  case MetaType::Float32:
-    return read_meta_scalar<float>(c);
-  case MetaType::UInt64:
-    return read_meta_scalar<std::uint64_t>(c);
-  case MetaType::Int64:
-    return read_meta_scalar<std::int64_t>(c);
-  case MetaType::Float64:
-    return read_meta_scalar<double>(c);
-  case MetaType::Bool:
-    return MetaValue{TRY(c.read_scalar<std::uint8_t>()) != 0};
-  case MetaType::String:
-    return MetaValue{TRY(c.read_string())};
-  case MetaType::Array: {
-    std::uint64_t elem_start = c.pos;
-    auto elem_raw = TRY(c.read_scalar<std::uint32_t>());
-    if (!meta_type_in_range(elem_raw)) {
-      return std::unexpected(Error{"array element type out of range: found " +
-                                       std::to_string(elem_raw) + ", expected 0..12",
-                                   c.path, elem_start});
-    }
-    auto elem_type = static_cast<MetaType>(elem_raw);
+    case MetaType::UInt8:
+      return read_meta_scalar<std::uint8_t>(c);
+    case MetaType::Int8:
+      return read_meta_scalar<std::int8_t>(c);
+    case MetaType::UInt16:
+      return read_meta_scalar<std::uint16_t>(c);
+    case MetaType::Int16:
+      return read_meta_scalar<std::int16_t>(c);
+    case MetaType::UInt32:
+      return read_meta_scalar<std::uint32_t>(c);
+    case MetaType::Int32:
+      return read_meta_scalar<std::int32_t>(c);
+    case MetaType::Float32:
+      return read_meta_scalar<float>(c);
+    case MetaType::UInt64:
+      return read_meta_scalar<std::uint64_t>(c);
+    case MetaType::Int64:
+      return read_meta_scalar<std::int64_t>(c);
+    case MetaType::Float64:
+      return read_meta_scalar<double>(c);
+    case MetaType::Bool:
+      return MetaValue{TRY(c.read_scalar<std::uint8_t>()) != 0};
+    case MetaType::String:
+      return MetaValue{TRY(c.read_string())};
+    case MetaType::Array: {
+      std::uint64_t elem_start = c.pos;
+      auto elem_raw = TRY(c.read_scalar<std::uint32_t>());
+      if (!meta_type_in_range(elem_raw)) {
+        return std::unexpected(Error{"array element type out of range: found " +
+                                         std::to_string(elem_raw) + ", expected 0..12",
+                                     c.path, elem_start});
+      }
+      auto elem_type = static_cast<MetaType>(elem_raw);
 
-    // GGUF arrays hold scalars only; an array-of-arrays is malformed
-    if (elem_type == MetaType::Array) {
-      return std::unexpected(
-          Error{"nested metadata arrays are not permitted by GGUF", c.path, elem_start});
+      // GGUF arrays hold scalars only; an array-of-arrays is malformed
+      if (elem_type == MetaType::Array) {
+        return std::unexpected(
+            Error{"nested metadata arrays are not permitted by GGUF", c.path, elem_start});
+      }
+      auto count = TRY(c.read_scalar<std::uint64_t>());
+      if (count > c.size - c.pos) {
+        return std::unexpected(Error{
+            "array count " + std::to_string(count) + " exceeds remaining bytes", c.path, c.pos});
+      }
+      MetaArray arr;
+      arr.elem_type = elem_type;
+      arr.values.reserve(static_cast<std::size_t>(count));
+      for (std::uint64_t i = 0; i < count; ++i) {
+        arr.values.push_back(TRY(read_meta_value(c, elem_type)));
+      }
+      return MetaValue{std::move(arr)};
     }
-    auto count = TRY(c.read_scalar<std::uint64_t>());
-    if (count > c.size - c.pos) {
-      return std::unexpected(Error{
-          "array count " + std::to_string(count) + " exceeds remaining bytes", c.path, c.pos});
-    }
-    MetaArray arr;
-    arr.elem_type = elem_type;
-    arr.values.reserve(static_cast<std::size_t>(count));
-    for (std::uint64_t i = 0; i < count; ++i) {
-      arr.values.push_back(TRY(read_meta_value(c, elem_type)));
-    }
-    return MetaValue{std::move(arr)};
-  }
   }
   return std::unexpected(Error{"unknown metadata value type", c.path, c.pos});
 }
 
-std::optional<std::uint64_t> as_u64(const MetaValue &mv) {
-  if (auto p = std::get_if<std::uint8_t>(&mv.value))
-    return *p;
-  if (auto p = std::get_if<std::uint16_t>(&mv.value))
-    return *p;
-  if (auto p = std::get_if<std::uint32_t>(&mv.value))
-    return *p;
-  if (auto p = std::get_if<std::uint64_t>(&mv.value))
-    return *p;
+std::optional<std::uint64_t> as_u64(const MetaValue& mv) {
+  if (auto p = std::get_if<std::uint8_t>(&mv.value)) return *p;
+  if (auto p = std::get_if<std::uint16_t>(&mv.value)) return *p;
+  if (auto p = std::get_if<std::uint32_t>(&mv.value)) return *p;
+  if (auto p = std::get_if<std::uint64_t>(&mv.value)) return *p;
   if (auto p = std::get_if<std::int32_t>(&mv.value))
     return *p >= 0 ? std::optional<std::uint64_t>(static_cast<std::uint64_t>(*p)) : std::nullopt;
   if (auto p = std::get_if<std::int64_t>(&mv.value))
@@ -269,18 +267,16 @@ std::optional<std::uint64_t> as_u64(const MetaValue &mv) {
   return std::nullopt;
 }
 
-const TensorInfo *find_tensor(const GgufFile &f, std::string_view name) {
-  for (const auto &t : f.tensors) {
-    if (t.name == name)
-      return &t;
+const TensorInfo* find_tensor(const GgufFile& f, std::string_view name) {
+  for (const auto& t : f.tensors) {
+    if (t.name == name) return &t;
   }
   return nullptr;
 }
 
-const TensorInfo *find_tensor_suffix(const GgufFile &f, std::string_view suffix) {
-  for (const auto &t : f.tensors) {
-    if (t.name.ends_with(suffix))
-      return &t;
+const TensorInfo* find_tensor_suffix(const GgufFile& f, std::string_view suffix) {
+  for (const auto& t : f.tensors) {
+    if (t.name.ends_with(suffix)) return &t;
   }
   return nullptr;
 }
@@ -289,23 +285,23 @@ const TensorInfo *find_tensor_suffix(const GgufFile &f, std::string_view suffix)
 // embedding_length/vocab_size (and, if present, an attn_q weight's column
 // count) so a mismatched or truncated file is caught here rather than as a
 // segfault or silent garbage deep in the forward pass.
-std::expected<void, Error> validate_against_metadata(const GgufFile &f, const std::string &path) {
-  const TensorInfo *embd = find_tensor(f, "token_embd.weight");
+std::expected<void, Error> validate_against_metadata(const GgufFile& f, const std::string& path) {
+  const TensorInfo* embd = find_tensor(f, "token_embd.weight");
   if (embd == nullptr) {
     return {};
   }
 
-  const MetaValue *arch_mv = f.find_meta("general.architecture");
+  const MetaValue* arch_mv = f.find_meta("general.architecture");
   if (arch_mv == nullptr) {
     return std::unexpected(
         Error{"token_embd.weight present but general.architecture missing", path, 0});
   }
-  const auto *arch = std::get_if<std::string>(&arch_mv->value);
+  const auto* arch = std::get_if<std::string>(&arch_mv->value);
   if (arch == nullptr) {
     return std::unexpected(Error{"general.architecture is not a string", path, 0});
   }
 
-  const MetaValue *emb_mv = f.find_meta(*arch + ".embedding_length");
+  const MetaValue* emb_mv = f.find_meta(*arch + ".embedding_length");
   if (emb_mv == nullptr) {
     return std::unexpected(Error{*arch + ".embedding_length missing", path, 0});
   }
@@ -315,12 +311,12 @@ std::expected<void, Error> validate_against_metadata(const GgufFile &f, const st
   }
 
   std::optional<std::uint64_t> vocab;
-  if (const MetaValue *vs = f.find_meta(*arch + ".vocab_size")) {
+  if (const MetaValue* vs = f.find_meta(*arch + ".vocab_size")) {
     vocab = as_u64(*vs);
   }
   if (!vocab) {
-    if (const MetaValue *toks = f.find_meta("tokenizer.ggml.tokens")) {
-      if (const auto *arr = std::get_if<MetaArray>(&toks->value)) {
+    if (const MetaValue* toks = f.find_meta("tokenizer.ggml.tokens")) {
+      if (const auto* arr = std::get_if<MetaArray>(&toks->value)) {
         vocab = arr->values.size();
       }
     }
@@ -339,7 +335,7 @@ std::expected<void, Error> validate_against_metadata(const GgufFile &f, const st
                                  path, embd->offset});
   }
 
-  if (const TensorInfo *attn = find_tensor_suffix(f, "attn_q.weight")) {
+  if (const TensorInfo* attn = find_tensor_suffix(f, "attn_q.weight")) {
     if (attn->shape[1] != *emb) {
       return std::unexpected(Error{"attention weight " + attn->name + " cols mismatch: expected " +
                                        std::to_string(*emb) + ", found " +
@@ -360,7 +356,7 @@ struct Header {
 // reads and validates the fixed 24-byte GGUF header (magic, version, counts).
 // this codebase only supports version 3; older layouts are rejected outright
 // rather than guessed at.
-std::expected<Header, Error> read_header(Cursor &c) {
+std::expected<Header, Error> read_header(Cursor& c) {
   auto magic = TRY(c.read_scalar<std::uint32_t>());
   // 'GGUF' little-endian.
   if (magic != 0x46554747u) {
@@ -384,8 +380,8 @@ std::expected<Header, Error> read_header(Cursor &c) {
 
 // reads the kv_count metadata entries following the header, preserving file
 // order for GgufFile::find_meta's linear scan.
-std::expected<std::vector<std::pair<std::string, MetaValue>>, Error>
-read_metadata(Cursor &c, std::uint64_t kv_count) {
+std::expected<std::vector<std::pair<std::string, MetaValue>>, Error> read_metadata(
+    Cursor& c, std::uint64_t kv_count) {
   std::vector<std::pair<std::string, MetaValue>> metadata;
   metadata.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(kv_count, 1024)));
   for (std::uint64_t i = 0; i < kv_count; ++i) {
@@ -406,12 +402,12 @@ read_metadata(Cursor &c, std::uint64_t kv_count) {
 // GGUF defaults tensor data alignment to 32 bytes unless general.alignment
 // overrides it; llama.cpp requires the override to be a power of two, so we
 // reject anything else up front rather than let a bogus value pass silently.
-std::expected<std::uint64_t, Error> resolve_alignment(const GgufFile &f, const std::string &path) {
-  const MetaValue *am = f.find_meta("general.alignment");
+std::expected<std::uint64_t, Error> resolve_alignment(const GgufFile& f, const std::string& path) {
+  const MetaValue* am = f.find_meta("general.alignment");
   if (am == nullptr) {
     return 32;
   }
-  const auto *a = std::get_if<std::uint32_t>(&am->value);
+  const auto* a = std::get_if<std::uint32_t>(&am->value);
   if (a == nullptr) {
     return std::unexpected(Error{"general.alignment must be UINT32", path, 0});
   }
@@ -427,7 +423,7 @@ std::expected<std::uint64_t, Error> resolve_alignment(const GgufFile &f, const s
 // type, and byte offset relative to the tensor data section. Also computes
 // each tensor's byte size from its element count and per-type block layout,
 // which bind_tensor_data later uses to bounds-check against the file.
-std::expected<std::vector<TensorInfo>, Error> read_tensor_infos(Cursor &c,
+std::expected<std::vector<TensorInfo>, Error> read_tensor_infos(Cursor& c,
                                                                 std::uint64_t tensor_count) {
   std::vector<TensorInfo> tensors;
   tensors.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(tensor_count, 65536)));
@@ -495,10 +491,10 @@ std::expected<std::vector<TensorInfo>, Error> read_tensor_infos(Cursor &c,
 // offset respects the file's alignment and that [offset, offset+nbytes) is
 // fully inside the file. This is the last chance to catch a truncated or
 // malformed file before callers start dereferencing tensor data directly.
-std::expected<void, Error> bind_tensor_data(std::vector<TensorInfo> &tensors, const std::byte *base,
+std::expected<void, Error> bind_tensor_data(std::vector<TensorInfo>& tensors, const std::byte* base,
                                             std::uint64_t file_size, std::uint64_t data_section,
-                                            std::uint64_t alignment, const std::string &path) {
-  for (auto &info : tensors) {
+                                            std::uint64_t alignment, const std::string& path) {
+  for (auto& info : tensors) {
     if (info.offset % alignment != 0) {
       return std::unexpected(Error{"tensor '" + info.name + "' offset " +
                                        std::to_string(info.offset) + " not aligned to " +
@@ -519,12 +515,11 @@ std::expected<void, Error> bind_tensor_data(std::vector<TensorInfo> &tensors, co
   return {};
 }
 
-} // namespace
+}  // namespace
 
-const MetaValue *GgufFile::find_meta(std::string_view key) const {
-  for (const auto &kv : metadata) {
-    if (kv.first == key)
-      return &kv.second;
+const MetaValue* GgufFile::find_meta(std::string_view key) const {
+  for (const auto& kv : metadata) {
+    if (kv.first == key) return &kv.second;
   }
   return nullptr;
 }
@@ -558,4 +553,4 @@ std::expected<GgufFile, Error> load(std::string_view path) {
   return file;
 }
 
-} // namespace dbinfer::gguf
+}  // namespace dbinfer::gguf

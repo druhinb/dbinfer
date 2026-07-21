@@ -1,30 +1,30 @@
 
 #include "args.hpp"
-#include "sample/sample.hpp"
 
 #include <cstdio>
 #include <string>
 #include <vector>
 
+#include "sample/sample.hpp"
+
 namespace {
 int g_failures = 0;
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok)
-    ++g_failures;
+  if (!ok) ++g_failures;
 }
 
 using dbinfer::cli::CliOptions;
 using dbinfer::cli::parse_args;
 
-std::expected<CliOptions, dbinfer::sample::Error> run(const std::vector<const char *> &args) {
+std::expected<CliOptions, dbinfer::sample::Error> run(const std::vector<const char*>& args) {
   return parse_args(static_cast<int>(args.size()), args.data());
 }
 
-bool contains(const std::string &haystack, const char *needle) {
+bool contains(const std::string& haystack, const char* needle) {
   return haystack.find(needle) != std::string::npos;
 }
-} // namespace
+}  // namespace
 
 int main() {
   using dbinfer::sample::kDefaultSeed;
@@ -34,7 +34,7 @@ int main() {
     auto r = run({"engine", "-m", "model.gguf", "-p", "hi"});
     bool ok = r.has_value();
     if (ok) {
-      const auto &p = r->params;
+      const auto& p = r->params;
       ok = p.temperature == 0.0f && p.top_k == 0 && p.top_p == 1.0f && p.min_p == 0.0f &&
            p.repeat_penalty == 1.0f && p.freq_penalty == 0.0f && p.presence_penalty == 0.0f &&
            p.penalty_last_n == 64 && p.seed == kDefaultSeed && r->n == 128 && !r->print_ids;
@@ -59,7 +59,7 @@ int main() {
                   "-n",         "32"});
     bool ok = r.has_value();
     if (ok) {
-      const auto &p = r->params;
+      const auto& p = r->params;
       ok = p.top_k == 40 && p.top_p == 0.9f && p.min_p == 0.05f && p.repeat_penalty == 1.1f &&
            p.freq_penalty == 0.2f && p.presence_penalty == 0.3f && p.penalty_last_n == 128 &&
            p.seed == 123ULL && p.temperature == 0.8f && r->print_ids && r->n == 32;

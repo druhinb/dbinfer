@@ -3,12 +3,6 @@
 // decodes under the grammar until it reaches a complete state. each completion
 // is written as one line to the output file for an external JSON validator.
 
-#include "gguf/gguf.hpp"
-#include "grammar/grammar.hpp"
-#include "model/model.hpp"
-#include "sample/sample.hpp"
-#include "tokenizer/tokenizer.hpp"
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -20,35 +14,38 @@
 #include <thread>
 #include <vector>
 
+#include "gguf/gguf.hpp"
+#include "grammar/grammar.hpp"
+#include "model/model.hpp"
+#include "sample/sample.hpp"
+#include "tokenizer/tokenizer.hpp"
+
 namespace {
 
-std::string read_file(const char *path) {
-  std::FILE *f = std::fopen(path, "rb");
-  if (f == nullptr)
-    return {};
+std::string read_file(const char* path) {
+  std::FILE* f = std::fopen(path, "rb");
+  if (f == nullptr) return {};
   std::string data;
   char buf[65536];
   std::size_t got = 0;
-  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0)
-    data.append(buf, got);
+  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0) data.append(buf, got);
   std::fclose(f);
   return data;
 }
 
-const char *arg_value(int argc, char **argv, const char *flag, const char *fallback) {
+const char* arg_value(int argc, char** argv, const char* flag, const char* fallback) {
   for (int i = 1; i + 1 < argc; ++i)
-    if (std::strcmp(argv[i], flag) == 0)
-      return argv[i + 1];
+    if (std::strcmp(argv[i], flag) == 0) return argv[i + 1];
   return fallback;
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char **argv) {
-  const char *model_path = arg_value(argc, argv, "-m", nullptr);
-  const char *grammar_path = arg_value(argc, argv, "-g", "grammars/json.gbnf");
-  const char *out_path = arg_value(argc, argv, "-o", "build/grammar_json_out.jsonl");
-  const char *prompt = arg_value(argc, argv, "-p", "Return one JSON object:\n");
+int main(int argc, char** argv) {
+  const char* model_path = arg_value(argc, argv, "-m", nullptr);
+  const char* grammar_path = arg_value(argc, argv, "-g", "grammars/json.gbnf");
+  const char* out_path = arg_value(argc, argv, "-o", "build/grammar_json_out.jsonl");
+  const char* prompt = arg_value(argc, argv, "-p", "Return one JSON object:\n");
   const int count = std::atoi(arg_value(argc, argv, "-c", "1000"));
   const int max_tokens = std::atoi(arg_value(argc, argv, "-n", "128"));
   const float temperature = static_cast<float>(std::atof(arg_value(argc, argv, "--temp", "1.0")));
@@ -72,8 +69,8 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "tokenizer: %s\n", dbinfer::gguf::to_string(tret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model &model = *mret;
-  const dbinfer::tokenizer::Tokenizer &tok = *tret;
+  dbinfer::model::Model& model = *mret;
+  const dbinfer::tokenizer::Tokenizer& tok = *tret;
 
   const std::string gtext = read_file(grammar_path);
   auto grammar = dbinfer::grammar::Grammar::parse(gtext);
@@ -93,7 +90,7 @@ int main(int argc, char **argv) {
   const std::vector<std::int32_t> prompt_ids = tok.encode(prompt, /*add_special=*/false);
   const float ninf = -std::numeric_limits<float>::infinity();
 
-  std::FILE *out = std::fopen(out_path, "wb");
+  std::FILE* out = std::fopen(out_path, "wb");
   if (out == nullptr) {
     std::fprintf(stderr, "cannot open %s\n", out_path);
     return 1;
@@ -102,16 +99,14 @@ int main(int argc, char **argv) {
   // the grammar mask tests every vocab token per step; feed() is const and
   // allocates locally, so the scan splits cleanly across threads.
   const std::size_t n_workers = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-  auto mask_range = [&](const dbinfer::grammar::State &state, bool comp, std::span<float> logits,
+  auto mask_range = [&](const dbinfer::grammar::State& state, bool comp, std::span<float> logits,
                         std::size_t lo, std::size_t hi) {
     for (std::size_t id = lo; id < hi; ++id) {
       if (static_cast<std::int32_t>(id) == eos) {
-        if (!comp)
-          logits[id] = ninf;
+        if (!comp) logits[id] = ninf;
         continue;
       }
-      if (!grammar->feed(state, token_bytes[id]))
-        logits[id] = ninf;
+      if (!grammar->feed(state, token_bytes[id])) logits[id] = ninf;
     }
   };
 
@@ -127,9 +122,8 @@ int main(int argc, char **argv) {
     dbinfer::grammar::State state = grammar->start();
 
     std::int32_t pos = 0;
-    const float *logits = nullptr;
-    for (std::int32_t id : prompt_ids)
-      logits = model.forward(id, pos++);
+    const float* logits = nullptr;
+    for (std::int32_t id : prompt_ids) logits = model.forward(id, pos++);
 
     std::string text;
     std::vector<std::int32_t> history = prompt_ids;
@@ -142,16 +136,13 @@ int main(int argc, char **argv) {
       for (std::size_t w = 0; w < n_workers; ++w) {
         const std::size_t lo = w * block;
         const std::size_t hi = std::min(lo + block, vocab);
-        if (lo >= hi)
-          break;
+        if (lo >= hi) break;
         workers.emplace_back(mask_range, std::cref(state), comp, std::span<float>(masked), lo, hi);
       }
-      for (std::thread &wk : workers)
-        wk.join();
+      for (std::thread& wk : workers) wk.join();
 
       const std::int32_t next = sampler.sample(masked.data(), vocab, history);
-      if (next == eos)
-        break;
+      if (next == eos) break;
       if (auto adv = grammar->feed(state, token_bytes[static_cast<std::size_t>(next)]))
         state = std::move(*adv);
       history.push_back(next);
@@ -173,9 +164,8 @@ int main(int argc, char **argv) {
       ++forced;
     }
 
-    for (char &c : text)
-      if (c == '\n' || c == '\r')
-        c = ' ';
+    for (char& c : text)
+      if (c == '\n' || c == '\r') c = ' ';
     std::fprintf(out, "%s\n", text.c_str());
     if ((seed + 1) % 50 == 0)
       std::fprintf(stderr, "generated %d/%d (natural %d, forced %d)\n", seed + 1, count, natural,

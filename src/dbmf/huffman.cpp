@@ -15,15 +15,15 @@ namespace {
 // a distribution whose optimal code exceeds it falls back to raw storage, so
 // the decoder never sees a longer code and its per-length tables stay bounded.
 constexpr std::uint32_t kMaxLen = 24;
-constexpr std::size_t kBlobHeader = 16 + 256; // n_elems, hi_stream_bytes, code_len[256]
+constexpr std::size_t kBlobHeader = 16 + 256;  // n_elems, hi_stream_bytes, code_len[256]
 
-void put_u64(std::vector<std::byte> &b, std::uint64_t v) {
+void put_u64(std::vector<std::byte>& b, std::uint64_t v) {
   std::byte tmp[8];
   std::memcpy(tmp, &v, sizeof v);
   b.insert(b.end(), tmp, tmp + sizeof v);
 }
 
-std::uint64_t get_u64(const std::byte *p) {
+std::uint64_t get_u64(const std::byte* p) {
   std::uint64_t v;
   std::memcpy(&v, p, sizeof v);
   return v;
@@ -31,8 +31,8 @@ std::uint64_t get_u64(const std::byte *p) {
 
 // huffman code length per symbol from a frequency table, using an optimal
 // bottom-up merge. lengths are read back off the tree by depth.
-std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256> &freq,
-                                           std::uint32_t &max_len) {
+std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256>& freq,
+                                           std::uint32_t& max_len) {
   std::array<std::uint8_t, 256> len{};
   std::vector<std::uint64_t> nfreq;
   std::vector<int> left, right;
@@ -42,8 +42,7 @@ std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256> 
   using Item = std::pair<std::uint64_t, int>;
   std::priority_queue<Item, std::vector<Item>, std::greater<Item>> heap;
   for (int s = 0; s < 256; ++s) {
-    if (freq[s] == 0)
-      continue;
+    if (freq[s] == 0) continue;
     const int id = static_cast<int>(nfreq.size());
     nfreq.push_back(freq[s]);
     left.push_back(-1);
@@ -53,12 +52,10 @@ std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256> 
   }
 
   max_len = 0;
-  if (heap.empty())
-    return len;
+  if (heap.empty()) return len;
   if (heap.size() == 1) {
     for (int s = 0; s < 256; ++s)
-      if (freq[s] > 0)
-        len[s] = 1;
+      if (freq[s] > 0) len[s] = 1;
     max_len = 1;
     return len;
   }
@@ -84,8 +81,7 @@ std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256> 
       const std::uint32_t d = depth == 0 ? 1 : depth;
       max_len = std::max(max_len, d);
       for (int s = 0; s < 256; ++s)
-        if (leaf_id[s] == id)
-          len[s] = static_cast<std::uint8_t>(d);
+        if (leaf_id[s] == id) len[s] = static_cast<std::uint8_t>(d);
       continue;
     }
     stack.push_back({left[id], depth + 1});
@@ -94,12 +90,11 @@ std::array<std::uint8_t, 256> code_lengths(const std::array<std::uint64_t, 256> 
   return len;
 }
 
-} // namespace
+}  // namespace
 
 CompressResult compress_f16(std::span<const std::byte> raw) {
   CompressResult result;
-  if (raw.size() % 2 != 0 || raw.empty())
-    return result;
+  if (raw.size() % 2 != 0 || raw.empty()) return result;
 
   const std::size_t n = raw.size() / 2;
   std::vector<std::byte> lo(n);
@@ -114,13 +109,11 @@ CompressResult compress_f16(std::span<const std::byte> raw) {
 
   std::uint32_t max_len = 0;
   const std::array<std::uint8_t, 256> len = code_lengths(freq, max_len);
-  if (max_len == 0 || max_len > kMaxLen)
-    return result;
+  if (max_len == 0 || max_len > kMaxLen) return result;
 
   std::array<std::uint32_t, kMaxLen + 1> bl_count{};
   for (int s = 0; s < 256; ++s)
-    if (len[s] > 0)
-      ++bl_count[len[s]];
+    if (len[s] > 0) ++bl_count[len[s]];
   std::array<std::uint32_t, kMaxLen + 1> next_code{};
   std::uint32_t code = 0;
   for (std::uint32_t l = 1; l <= max_len; ++l) {
@@ -129,8 +122,7 @@ CompressResult compress_f16(std::span<const std::byte> raw) {
   }
   std::array<std::uint32_t, 256> sym_code{};
   for (int s = 0; s < 256; ++s)
-    if (len[s] > 0)
-      sym_code[s] = next_code[len[s]]++;
+    if (len[s] > 0) sym_code[s] = next_code[len[s]]++;
 
   std::vector<std::byte> bits;
   bits.reserve(n);
@@ -149,19 +141,16 @@ CompressResult compress_f16(std::span<const std::byte> raw) {
       }
     }
   }
-  if (nbits > 0)
-    bits.push_back(static_cast<std::byte>((acc << (8 - nbits)) & 0xFF));
+  if (nbits > 0) bits.push_back(static_cast<std::byte>((acc << (8 - nbits)) & 0xFF));
 
   const std::size_t total = kBlobHeader + bits.size() + n;
-  if (total >= raw.size())
-    return result;
+  if (total >= raw.size()) return result;
 
   std::vector<std::byte> blob;
   blob.reserve(total);
   put_u64(blob, n);
   put_u64(blob, bits.size());
-  for (int s = 0; s < 256; ++s)
-    blob.push_back(static_cast<std::byte>(len[s]));
+  for (int s = 0; s < 256; ++s) blob.push_back(static_cast<std::byte>(len[s]));
   blob.insert(blob.end(), bits.begin(), bits.end());
   blob.insert(blob.end(), lo.begin(), lo.end());
 
@@ -176,11 +165,10 @@ std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
     return std::unexpected(gguf::Error{"dbmf huffman: " + std::move(msg), "", 0});
   };
 
-  if (blob.size() < kBlobHeader)
-    return bad("blob shorter than header");
+  if (blob.size() < kBlobHeader) return bad("blob shorter than header");
   const std::uint64_t n = get_u64(blob.data());
   const std::uint64_t hi_bytes = get_u64(blob.data() + 8);
-  const std::byte *lens = blob.data() + 16;
+  const std::byte* lens = blob.data() + 16;
 
   if (out.size() != n * 2)
     return bad("output size " + std::to_string(out.size()) + " does not match element count " +
@@ -194,8 +182,7 @@ std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
   std::uint32_t max_len = 0;
   for (int s = 0; s < 256; ++s) {
     const auto l = std::to_integer<std::uint8_t>(lens[s]);
-    if (l > kMaxLen)
-      return bad("code length " + std::to_string(l) + " exceeds cap");
+    if (l > kMaxLen) return bad("code length " + std::to_string(l) + " exceeds cap");
     if (l > 0) {
       ++bl_count[l];
       max_len = std::max(max_len, static_cast<std::uint32_t>(l));
@@ -220,8 +207,8 @@ std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
     index += bl_count[l];
   }
 
-  const std::byte *stream = blob.data() + kBlobHeader;
-  const std::byte *lo = stream + hi_bytes;
+  const std::byte* stream = blob.data() + kBlobHeader;
+  const std::byte* lo = stream + hi_bytes;
 
   std::uint64_t bitpos = 0;
   const std::uint64_t total_bits = hi_bytes * 8;
@@ -229,15 +216,13 @@ std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
     std::uint32_t cur = 0;
     std::uint32_t l = 0;
     for (;;) {
-      if (bitpos >= total_bits)
-        return bad("bitstream underrun");
+      if (bitpos >= total_bits) return bad("bitstream underrun");
       const std::byte byte = stream[bitpos >> 3];
       const std::uint32_t bit = (std::to_integer<std::uint8_t>(byte) >> (7 - (bitpos & 7))) & 1u;
       ++bitpos;
       cur = (cur << 1) | bit;
       ++l;
-      if (l > max_len)
-        return bad("no code matched within max length");
+      if (l > max_len) return bad("no code matched within max length");
       if (bl_count[l] != 0 && cur - first_code[l] < bl_count[l]) {
         const std::uint8_t sym = ordered[first_index[l] + (cur - first_code[l])];
         out[2 * i] = lo[i];
@@ -249,4 +234,4 @@ std::expected<void, gguf::Error> decompress_f16(std::span<const std::byte> blob,
   return {};
 }
 
-} // namespace dbinfer::dbmf
+}  // namespace dbinfer::dbmf

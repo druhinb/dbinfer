@@ -1,21 +1,21 @@
-#include "gguf/gguf.hpp"
-
-#include <cerrno>
-#include <cstring>
-
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstring>
+
+#include "gguf/gguf.hpp"
+
 namespace dbinfer::gguf {
 
-MappedFile::MappedFile(MappedFile &&other) noexcept : data_(other.data_), size_(other.size_) {
+MappedFile::MappedFile(MappedFile&& other) noexcept : data_(other.data_), size_(other.size_) {
   other.data_ = nullptr;
   other.size_ = 0;
 }
 
-MappedFile &MappedFile::operator=(MappedFile &&other) noexcept {
+MappedFile& MappedFile::operator=(MappedFile&& other) noexcept {
   if (this != &other) {
     reset();
     data_ = other.data_;
@@ -57,7 +57,7 @@ std::expected<MappedFile, Error> MappedFile::open(std::string_view path) {
   }
 
   const auto size = static_cast<std::size_t>(st.st_size);
-  void *addr = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
+  void* addr = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (addr == MAP_FAILED) {
     Error e{std::string("mmap failed: ") + std::strerror(errno), path_str, 0};
     ::close(fd);
@@ -74,13 +74,12 @@ std::expected<MappedFile, Error> MappedFile::open(std::string_view path) {
 }
 
 std::expected<MappedFile, Error> MappedFile::anonymous(std::size_t size) {
-  if (size == 0)
-    return std::unexpected(Error{"anonymous mapping of zero bytes", "", 0});
-  void *addr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (size == 0) return std::unexpected(Error{"anonymous mapping of zero bytes", "", 0});
+  void* addr = ::mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
   if (addr == MAP_FAILED)
     return std::unexpected(
         Error{std::string("anonymous mmap failed: ") + std::strerror(errno), "", 0});
   return MappedFile(addr, size);
 }
 
-} // namespace dbinfer::gguf
+}  // namespace dbinfer::gguf

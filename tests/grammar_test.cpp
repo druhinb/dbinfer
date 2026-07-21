@@ -13,10 +13,9 @@ namespace {
 
 int g_failures = 0;
 
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok)
-    ++g_failures;
+  if (!ok) ++g_failures;
 }
 
 using dbinfer::grammar::Grammar;
@@ -25,8 +24,7 @@ using dbinfer::grammar::State;
 
 Grammar must_parse(std::string_view text) {
   auto g = Grammar::parse(text);
-  if (g)
-    return std::move(*g);
+  if (g) return std::move(*g);
   std::printf("FAIL parse: %s\n", g.error().message.c_str());
   ++g_failures;
   auto fallback = Grammar::parse("root ::= \"x\"");
@@ -35,15 +33,14 @@ Grammar must_parse(std::string_view text) {
 
 // feeds the whole string as one blob and reports whether the grammar reaches a
 // complete (accepting) state with no rejection.
-bool matches(const Grammar &g, std::string_view s) {
+bool matches(const Grammar& g, std::string_view s) {
   State st = g.start();
   auto r = g.feed(st, s);
-  if (!r)
-    return false;
+  if (!r) return false;
   return g.complete(*r);
 }
 
-bool rejected(const Grammar &g, std::string_view s) {
+bool rejected(const Grammar& g, std::string_view s) {
   State st = g.start();
   return !g.feed(st, s).has_value();
 }
@@ -58,7 +55,7 @@ const std::string kJson =
     "number ::= (\"-\"? ([0-9] | [1-9] [0-9]*)) (\".\" [0-9]+)? ([eE] [-+]? [0-9]+)? ws\n"
     "ws ::= ([ \\t\\n] ws)?\n";
 
-} // namespace
+}  // namespace
 
 int main() {
   {

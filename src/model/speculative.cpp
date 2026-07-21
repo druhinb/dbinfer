@@ -9,7 +9,7 @@ namespace {
 
 // first-max wins on ties, matching the greedy sampler short-circuit so the
 // speculative stream is bit-identical to spec-off greedy decode.
-std::int32_t argmax(const float *logits, std::size_t n) {
+std::int32_t argmax(const float* logits, std::size_t n) {
   std::int32_t best = 0;
   float bestv = logits[0];
   for (std::size_t i = 1; i < n; ++i) {
@@ -21,11 +21,11 @@ std::int32_t argmax(const float *logits, std::size_t n) {
   return best;
 }
 
-} // namespace
+}  // namespace
 
 std::size_t speculative_merge(std::span<const std::int32_t> draft,
                               std::span<const std::int32_t> target,
-                              std::vector<std::int32_t> &out) {
+                              std::vector<std::int32_t>& out) {
   std::size_t j = 0;
   while (j < draft.size() && draft[j] == target[j]) {
     out.push_back(draft[j]);
@@ -37,12 +37,11 @@ std::size_t speculative_merge(std::span<const std::int32_t> draft,
   return j;
 }
 
-std::vector<std::int32_t> speculative_generate(Model &target, Model &draft,
+std::vector<std::int32_t> speculative_generate(Model& target, Model& draft,
                                                std::span<const std::int32_t> prompt, std::size_t k,
-                                               std::size_t n, std::int32_t eos, SpecStats *stats) {
+                                               std::size_t n, std::int32_t eos, SpecStats* stats) {
   std::vector<std::int32_t> gen;
-  if (prompt.empty() || k == 0 || n == 0)
-    return gen;
+  if (prompt.empty() || k == 0 || n == 0) return gen;
 
   target.reset_kv();
   draft.reset_kv();
@@ -70,17 +69,15 @@ std::vector<std::int32_t> speculative_generate(Model &target, Model &draft,
   while (!stop && gen.size() < n) {
     std::int32_t cur = last;
     for (std::size_t i = 0; i < k; ++i) {
-      const float *ld = draft.forward(cur, pos + static_cast<std::int32_t>(i));
+      const float* ld = draft.forward(cur, pos + static_cast<std::int32_t>(i));
       cur = argmax(ld, vocab);
       proposals[i] = cur;
     }
 
     inputs[0] = last;
-    for (std::size_t i = 0; i < k; ++i)
-      inputs[i + 1] = proposals[i];
+    for (std::size_t i = 0; i < k; ++i) inputs[i + 1] = proposals[i];
     target.forward_chunk(inputs.data(), pos, k + 1, chunk.data());
-    for (std::size_t i = 0; i <= k; ++i)
-      verified[i] = argmax(chunk.data() + i * vocab, vocab);
+    for (std::size_t i = 0; i <= k; ++i) verified[i] = argmax(chunk.data() + i * vocab, vocab);
 
     merged.clear();
     const std::size_t accepted =
@@ -93,8 +90,7 @@ std::vector<std::int32_t> speculative_generate(Model &target, Model &draft,
     // on full acceptance the draft cache never wrote proposals[k-1] (it stayed
     // the pending argmax of the last draft forward). write it so the next
     // round's draft attention reads a committed slot at pos+k.
-    if (accepted == k)
-      draft.forward(proposals[k - 1], pos + static_cast<std::int32_t>(k));
+    if (accepted == k) draft.forward(proposals[k - 1], pos + static_cast<std::int32_t>(k));
 
     last = merged.back();
     pos += static_cast<std::int32_t>(accepted) + 1;
@@ -108,9 +104,8 @@ std::vector<std::int32_t> speculative_generate(Model &target, Model &draft,
     }
   }
 
-  if (stats != nullptr)
-    *stats = st;
+  if (stats != nullptr) *stats = st;
   return gen;
 }
 
-} // namespace dbinfer::model
+}  // namespace dbinfer::model

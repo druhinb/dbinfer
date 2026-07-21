@@ -1,9 +1,3 @@
-#include "dbmf/dbmf.hpp"
-#include "dbmf/huffman.hpp"
-#include "dbmf/xxhash.hpp"
-#include "gguf/gguf.hpp"
-#include "model/model.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -13,6 +7,12 @@
 #include <string>
 #include <vector>
 
+#include "dbmf/dbmf.hpp"
+#include "dbmf/huffman.hpp"
+#include "dbmf/xxhash.hpp"
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
+
 // dbmf gate: a converted model reproduces the gguf original's logits to the
 // bit, for q8_0 raw, f16 raw, and f16 compressed. plus round-trip, dedup,
 // corruption detection, and a header-parser fuzz, all under the same binary.
@@ -21,7 +21,7 @@ namespace {
 
 int g_failures = 0;
 
-void fail(const std::string &msg) {
+void fail(const std::string& msg) {
   std::printf("FAIL %s\n", msg.c_str());
   ++g_failures;
 }
@@ -33,40 +33,37 @@ std::vector<std::int32_t> make_prompt() {
   return ids;
 }
 
-std::vector<float> run_logits(const dbinfer::gguf::GgufFile &file,
-                              const std::vector<std::int32_t> &ids) {
+std::vector<float> run_logits(const dbinfer::gguf::GgufFile& file,
+                              const std::vector<std::int32_t>& ids) {
   auto mret = dbinfer::model::Model::load(file);
   if (!mret) {
     fail(std::string("model load: ") + dbinfer::gguf::to_string(mret.error()));
     return {};
   }
-  dbinfer::model::Model &model = *mret;
+  dbinfer::model::Model& model = *mret;
   const std::size_t vocab = model.config().vocab_size;
   std::vector<float> out(ids.size() * vocab);
   for (std::size_t s = 0; s < ids.size(); ++s) {
-    const float *l = model.forward(ids[s], static_cast<std::int32_t>(s));
+    const float* l = model.forward(ids[s], static_cast<std::int32_t>(s));
     std::memcpy(out.data() + s * vocab, l, vocab * sizeof(float));
   }
   return out;
 }
 
-std::vector<std::byte> read_file(const std::string &path) {
-  std::FILE *f = std::fopen(path.c_str(), "rb");
+std::vector<std::byte> read_file(const std::string& path) {
+  std::FILE* f = std::fopen(path.c_str(), "rb");
   std::vector<std::byte> data;
-  if (f == nullptr)
-    return data;
+  if (f == nullptr) return data;
   std::byte buf[65536];
   std::size_t got = 0;
-  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0)
-    data.insert(data.end(), buf, buf + got);
+  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0) data.insert(data.end(), buf, buf + got);
   std::fclose(f);
   return data;
 }
 
-void write_file(const std::string &path, std::span<const std::byte> data) {
-  std::FILE *f = std::fopen(path.c_str(), "wb");
-  if (f == nullptr)
-    return;
+void write_file(const std::string& path, std::span<const std::byte> data) {
+  std::FILE* f = std::fopen(path.c_str(), "wb");
+  if (f == nullptr) return;
   std::fwrite(data.data(), 1, data.size(), f);
   std::fclose(f);
 }
@@ -74,8 +71,8 @@ void write_file(const std::string &path, std::span<const std::byte> data) {
 std::string dir() { return std::string(DBINFER_DBMF_DIR) + "/"; }
 
 // bitwise logits gate for one source model in one storage mode.
-void logits_gate(const char *label, const char *gguf_path, bool compress,
-                 const std::vector<std::int32_t> &ids) {
+void logits_gate(const char* label, const char* gguf_path, bool compress,
+                 const std::vector<std::int32_t>& ids) {
   auto gloaded = dbinfer::gguf::load(gguf_path);
   if (!gloaded) {
     fail(std::string(label) + " load gguf: " + dbinfer::gguf::to_string(gloaded.error()));
@@ -103,8 +100,7 @@ void logits_gate(const char *label, const char *gguf_path, bool compress,
   if (std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) != 0) {
     std::size_t diffs = 0;
     for (std::size_t i = 0; i < a.size(); ++i)
-      if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0)
-        ++diffs;
+      if (std::memcmp(&a[i], &b[i], sizeof(float)) != 0) ++diffs;
     fail(std::string(label) + " logits differ in " + std::to_string(diffs) + "/" +
          std::to_string(a.size()) + " positions");
     return;
@@ -119,7 +115,7 @@ struct Owned {
   std::vector<std::byte> bytes;
 };
 
-dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned> &store) {
+dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned>& store) {
   using namespace dbinfer::gguf;
   GgufFile f;
   f.version = 3;
@@ -132,7 +128,7 @@ dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned> &store) {
   toks.values.push_back(MetaValue{std::string("world")});
   f.metadata.emplace_back("tokenizer.ggml.tokens", MetaValue{std::move(toks)});
 
-  auto add = [&](const std::string &name, GgmlType type, std::uint64_t rows, std::uint64_t cols,
+  auto add = [&](const std::string& name, GgmlType type, std::uint64_t rows, std::uint64_t cols,
                  std::byte fill) {
     const TypeInfo ti = type_info(type);
     const std::uint64_t nelem = rows * cols;
@@ -160,7 +156,7 @@ dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned> &store) {
   return f;
 }
 
-void roundtrip_and_dedup(std::vector<Owned> &store) {
+void roundtrip_and_dedup(std::vector<Owned>& store) {
   dbinfer::gguf::GgufFile src = make_synthetic(store);
   const std::string out = dir() + "synthetic.dbmf";
   if (auto ok = dbinfer::dbmf::convert(src, out); !ok) {
@@ -172,16 +168,15 @@ void roundtrip_and_dedup(std::vector<Owned> &store) {
     fail("synthetic read: " + dbinfer::gguf::to_string(dloaded.error()));
     return;
   }
-  const dbinfer::gguf::GgufFile &df = *dloaded;
+  const dbinfer::gguf::GgufFile& df = *dloaded;
   if (df.tensors.size() != src.tensors.size()) {
     fail("synthetic tensor count mismatch");
     return;
   }
-  for (const auto &st : src.tensors) {
-    const dbinfer::gguf::TensorInfo *dt = nullptr;
-    for (const auto &t : df.tensors)
-      if (t.name == st.name)
-        dt = &t;
+  for (const auto& st : src.tensors) {
+    const dbinfer::gguf::TensorInfo* dt = nullptr;
+    for (const auto& t : df.tensors)
+      if (t.name == st.name) dt = &t;
     if (dt == nullptr || dt->nbytes != st.nbytes ||
         std::memcmp(dt->data, st.data, static_cast<std::size_t>(st.nbytes)) != 0) {
       fail("synthetic tensor bytes mismatch: " + st.name);
@@ -189,13 +184,11 @@ void roundtrip_and_dedup(std::vector<Owned> &store) {
     }
   }
   // token_embd and its twin must share one data offset after dedup.
-  const dbinfer::gguf::TensorInfo *e = nullptr;
-  const dbinfer::gguf::TensorInfo *o = nullptr;
-  for (const auto &t : df.tensors) {
-    if (t.name == "token_embd.weight")
-      e = &t;
-    if (t.name == "output.weight")
-      o = &t;
+  const dbinfer::gguf::TensorInfo* e = nullptr;
+  const dbinfer::gguf::TensorInfo* o = nullptr;
+  for (const auto& t : df.tensors) {
+    if (t.name == "token_embd.weight") e = &t;
+    if (t.name == "output.weight") o = &t;
   }
   if (e == nullptr || o == nullptr || e->offset != o->offset || e->data != o->data) {
     fail("dedup did not share identical tensors");
@@ -205,7 +198,7 @@ void roundtrip_and_dedup(std::vector<Owned> &store) {
               static_cast<unsigned long long>(e->offset));
 }
 
-void corruption_gate(std::vector<Owned> &store) {
+void corruption_gate(std::vector<Owned>& store) {
   dbinfer::gguf::GgufFile src = make_synthetic(store);
   const std::string good = dir() + "corrupt_src.dbmf";
   if (auto ok = dbinfer::dbmf::convert(src, good); !ok) {
@@ -220,7 +213,7 @@ void corruption_gate(std::vector<Owned> &store) {
   // locate the q8 tensor's data offset to flip a byte inside it.
   std::uint64_t off = 0;
   std::string target;
-  for (const auto &t : base->tensors)
+  for (const auto& t : base->tensors)
     if (t.name == "blk.0.attn_q.weight") {
       off = t.offset;
       target = t.name;
@@ -264,7 +257,7 @@ void corruption_gate(std::vector<Owned> &store) {
 
   // 4. corrupted header field caught by the header checksum.
   auto badhdr = bytes;
-  badhdr[16] ^= std::byte{0x01}; // tensor_count low byte
+  badhdr[16] ^= std::byte{0x01};  // tensor_count low byte
   const std::string hpath = dir() + "corrupt_hdr.dbmf";
   write_file(hpath, badhdr);
   auto r4 = dbinfer::dbmf::read(hpath);
@@ -276,7 +269,7 @@ void corruption_gate(std::vector<Owned> &store) {
 }
 
 // random single-byte mutations of a valid file must never crash the parser.
-void fuzz_parser(std::vector<Owned> &store) {
+void fuzz_parser(std::vector<Owned>& store) {
   dbinfer::gguf::GgufFile src = make_synthetic(store);
   const std::string good = dir() + "fuzz_src.dbmf";
   if (auto ok = dbinfer::dbmf::convert(src, good, {/*compress=*/true}); !ok) {
@@ -292,11 +285,10 @@ void fuzz_parser(std::vector<Owned> &store) {
   for (int iter = 0; iter < 64; ++iter) {
     auto mutated = bytes;
     const int flips = 1 + (iter % 6);
-    for (int k = 0; k < flips; ++k)
-      mutated[pos(rng)] = static_cast<std::byte>(val(rng));
+    for (int k = 0; k < flips; ++k) mutated[pos(rng)] = static_cast<std::byte>(val(rng));
     write_file(fpath, mutated);
     auto r = dbinfer::dbmf::read(fpath, {/*verify=*/true});
-    (void)r; // ok or actionable error, never a crash (ASan-checked)
+    (void)r;  // ok or actionable error, never a crash (ASan-checked)
     ++crashes_avoided;
   }
   std::printf("PASS fuzz          %d mutated files parsed without crash\n", crashes_avoided);
@@ -306,8 +298,8 @@ void huffman_unit() {
   // an f16 plane the coder actually shrinks, then a bad blob the decoder rejects.
   std::vector<std::byte> raw(4096);
   for (std::size_t i = 0; i < raw.size(); i += 2) {
-    raw[i] = static_cast<std::byte>(i & 0xFF);         // low byte varies
-    raw[i + 1] = static_cast<std::byte>((i / 64) & 3); // high byte low entropy
+    raw[i] = static_cast<std::byte>(i & 0xFF);          // low byte varies
+    raw[i + 1] = static_cast<std::byte>((i / 64) & 3);  // high byte low entropy
   }
   dbinfer::dbmf::CompressResult r = dbinfer::dbmf::compress_f16(raw);
   if (!r.compressed) {
@@ -330,7 +322,7 @@ void huffman_unit() {
     std::printf("PASS huffman       round-trip exact, short blob rejected\n");
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   const std::vector<std::int32_t> ids = make_prompt();

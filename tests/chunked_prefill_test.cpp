@@ -3,15 +3,14 @@
 // length so the last chunk is ragged, and asserts memcmp equality over the
 // logits at every position.
 
-#include "model/model.hpp"
-
-#include "gguf/gguf.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
 
 #ifndef DBINFER_TEST_GGUF
 #error "DBINFER_TEST_GGUF must be defined by the build"
@@ -26,7 +25,7 @@ int main() {
 
   const std::int32_t ids[10] = {40, 1079, 264, 4128, 1614, 13, 358, 1079, 264, 4128};
   const std::size_t total = 10;
-  const std::size_t chunk = 4; // 4 does not divide 10: chunks 4, 4, 2.
+  const std::size_t chunk = 4;  // 4 does not divide 10: chunks 4, 4, 2.
 
   auto model_a = dbinfer::model::Model::load(*loaded);
   auto model_b = dbinfer::model::Model::load(*loaded);
@@ -38,7 +37,7 @@ int main() {
 
   std::vector<float> per_token(total * vocab);
   for (std::size_t i = 0; i < total; ++i) {
-    const float *l = model_a->forward(ids[i], static_cast<std::int32_t>(i));
+    const float* l = model_a->forward(ids[i], static_cast<std::int32_t>(i));
     std::memcpy(per_token.data() + i * vocab, l, vocab * sizeof(float));
   }
 

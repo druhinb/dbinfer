@@ -1,10 +1,10 @@
 #include "tokenizer/unicode.hpp"
 
-#include "tokenizer/unicode_data.inc"
-
 #include <algorithm>
 #include <array>
 #include <unordered_map>
+
+#include "tokenizer/unicode_data.inc"
 
 namespace dbinfer::tokenizer {
 
@@ -17,11 +17,10 @@ constexpr std::uint16_t kFlagLetter = 0x0004;
 // finds the first range starting after cpt, so the run containing cpt is the
 // one before it.
 std::uint16_t flags_for(std::uint32_t cpt) {
-  if (cpt >= 0x110000)
-    return 0x0001; // UNDEFINED
-  const std::uint32_t *begin = detail::kRangeStart;
-  const std::uint32_t *end = detail::kRangeStart + detail::kRangesCount;
-  const std::uint32_t *it = std::upper_bound(begin, end, cpt);
+  if (cpt >= 0x110000) return 0x0001;  // UNDEFINED
+  const std::uint32_t* begin = detail::kRangeStart;
+  const std::uint32_t* end = detail::kRangeStart + detail::kRangesCount;
+  const std::uint32_t* it = std::upper_bound(begin, end, cpt);
   std::size_t idx = static_cast<std::size_t>(it - begin) - 1;
   return detail::kRangeFlags[idx];
 }
@@ -38,8 +37,7 @@ struct ByteCodec {
   ByteCodec() {
     std::array<bool, 256> direct{};
     auto mark = [&](int lo, int hi) {
-      for (int c = lo; c <= hi; ++c)
-        direct[static_cast<std::size_t>(c)] = true;
+      for (int c = lo; c <= hi; ++c) direct[static_cast<std::size_t>(c)] = true;
     };
     mark(0x21, 0x7E);
     mark(0xA1, 0xAC);
@@ -61,12 +59,12 @@ struct ByteCodec {
   }
 };
 
-const ByteCodec &codec() {
+const ByteCodec& codec() {
   static const ByteCodec c;
   return c;
 }
 
-} // namespace
+}  // namespace
 
 std::size_t utf8_len(unsigned char lead) {
   static const std::size_t lookup[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 4};
@@ -150,20 +148,18 @@ bool is_number(std::uint32_t cpt) { return (flags_for(cpt) & kFlagNumber) != 0; 
 
 bool is_whitespace(std::uint32_t cpt) {
   for (std::uint32_t i = 0; i < detail::kWhitespaceCount; ++i)
-    if (detail::kWhitespace[i] == cpt)
-      return true;
+    if (detail::kWhitespace[i] == cpt) return true;
   return false;
 }
 
-const std::string &byte_to_unicode(std::uint8_t b) { return codec().byte_to_str[b]; }
+const std::string& byte_to_unicode(std::uint8_t b) { return codec().byte_to_str[b]; }
 
-bool cpt_to_byte(std::uint32_t cpt, std::uint8_t &out) {
-  const auto &m = codec().cpt_to_byte;
+bool cpt_to_byte(std::uint32_t cpt, std::uint8_t& out) {
+  const auto& m = codec().cpt_to_byte;
   auto it = m.find(cpt);
-  if (it == m.end())
-    return false;
+  if (it == m.end()) return false;
   out = it->second;
   return true;
 }
 
-} // namespace dbinfer::tokenizer
+}  // namespace dbinfer::tokenizer

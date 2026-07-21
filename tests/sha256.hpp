@@ -12,7 +12,7 @@
 namespace dbinfer::sha256 {
 
 class Sha256 {
-public:
+ public:
   Sha256() { reset(); }
 
   void reset() {
@@ -22,7 +22,7 @@ public:
           0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
   }
 
-  void update(const std::uint8_t *data, std::size_t n) {
+  void update(const std::uint8_t* data, std::size_t n) {
     len_ += n;
     for (std::size_t i = 0; i < n; ++i) {
       buf_[buf_len_++] = data[i];
@@ -39,14 +39,12 @@ public:
     std::uint8_t pad = 0x80;
     update(&pad, 1);
     std::uint8_t zero = 0x00;
-    while (buf_len_ != 56)
-      update(&zero, 1);
+    while (buf_len_ != 56) update(&zero, 1);
     std::array<std::uint8_t, 8> lenbytes{};
-    for (int i = 0; i < 8; ++i)
-      lenbytes[i] = static_cast<std::uint8_t>(bit_len >> (56 - 8 * i));
+    for (int i = 0; i < 8; ++i) lenbytes[i] = static_cast<std::uint8_t>(bit_len >> (56 - 8 * i));
     update(lenbytes.data(), 8);
 
-    static const char *hexd = "0123456789abcdef";
+    static const char* hexd = "0123456789abcdef";
     std::string out;
     out.reserve(64);
     for (std::uint32_t word : h_) {
@@ -59,10 +57,10 @@ public:
     return out;
   }
 
-private:
+ private:
   static std::uint32_t rotr(std::uint32_t x, std::uint32_t n) { return (x >> n) | (x << (32 - n)); }
 
-  void process(const std::uint8_t *p) {
+  void process(const std::uint8_t* p) {
     static const std::uint32_t k[64] = {
         0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u,
         0xab1c5ed5u, 0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu,
@@ -123,12 +121,12 @@ private:
 };
 
 // Convenience: digest a byte span in one call.
-inline std::string hex_digest(const std::uint8_t *data, std::size_t n) {
+inline std::string hex_digest(const std::uint8_t* data, std::size_t n) {
   Sha256 s;
   s.update(data, n);
   return s.hex();
 }
 
-} // namespace dbinfer::sha256
+}  // namespace dbinfer::sha256
 
-#endif // DBINFER_TESTS_SHA256_HPP
+#endif  // DBINFER_TESTS_SHA256_HPP

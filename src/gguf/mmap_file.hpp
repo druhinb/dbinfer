@@ -15,15 +15,15 @@ struct Error;
 // weights are read straight out of data() for the file's whole lifetime, so
 // nothing may outlive the MappedFile it came from.
 class MappedFile {
-public:
+ public:
   MappedFile() = default;
   ~MappedFile();
 
-  MappedFile(const MappedFile &) = delete;
-  MappedFile &operator=(const MappedFile &) = delete;
+  MappedFile(const MappedFile&) = delete;
+  MappedFile& operator=(const MappedFile&) = delete;
 
-  MappedFile(MappedFile &&other) noexcept;
-  MappedFile &operator=(MappedFile &&other) noexcept;
+  MappedFile(MappedFile&& other) noexcept;
+  MappedFile& operator=(MappedFile&& other) noexcept;
 
   // opens path read-only and maps its full contents. Rejects empty files
   // (mmap of a zero-length file is undefined) up front.
@@ -33,19 +33,19 @@ public:
   // a compressed container. filled via data_mut() before any reader sees it.
   static std::expected<MappedFile, Error> anonymous(std::size_t size);
 
-  const std::byte *data() const { return static_cast<const std::byte *>(data_); }
-  std::byte *data_mut() { return static_cast<std::byte *>(data_); }
+  const std::byte* data() const { return static_cast<const std::byte*>(data_); }
+  std::byte* data_mut() { return static_cast<std::byte*>(data_); }
   std::size_t size() const { return size_; }
 
-private:
-  MappedFile(void *data, std::size_t size) : data_(data), size_(size) {}
+ private:
+  MappedFile(void* data, std::size_t size) : data_(data), size_(size) {}
 
   void reset() noexcept;
 
-  void *data_ = nullptr;
+  void* data_ = nullptr;
   std::size_t size_ = 0;
 };
 
-} // namespace dbinfer::gguf
+}  // namespace dbinfer::gguf
 
 #endif

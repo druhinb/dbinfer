@@ -11,11 +11,11 @@ struct CpuFeatures {
 };
 
 // runtime arm feature detection, computed once on first call.
-const CpuFeatures &cpu_features();
+const CpuFeatures& cpu_features();
 
 // physical performance-core count from hw.perflevel0.physicalcpu, 1 on failure.
 std::size_t p_core_count();
 
-} // namespace dbinfer::tensor
+}  // namespace dbinfer::tensor
 
-#endif // DBINFER_TENSOR_CPU_HPP
+#endif  // DBINFER_TENSOR_CPU_HPP

@@ -1,10 +1,10 @@
 #ifndef DBINFER_TENSOR_DEQUANT_HPP
 #define DBINFER_TENSOR_DEQUANT_HPP
 
-#include "tensor/matmul.hpp"
-
 #include <cstddef>
 #include <cstdint>
+
+#include "tensor/matmul.hpp"
 
 namespace dbinfer::tensor {
 
@@ -28,11 +28,11 @@ static_assert(sizeof(BlockQ8_0) == 34);
 
 // dequantizes in values of one Q8_0 row (in/32 blocks from block_base) into
 // out: out[i] = f16_to_f32(d) * qs[i]. in must be a multiple of 32.
-void dequant_row_q8_0(const std::byte *block_base, std::size_t in, float *out);
+void dequant_row_q8_0(const std::byte* block_base, std::size_t in, float* out);
 
 // quantizes n activations into n/32 Q8_0 blocks at out. n must be a multiple
 // of 32. block d is stored fp16 so the vec dot scale matches ggml at parity.
-void quantize_row_q8_0(const float *x, std::size_t n, std::byte *out);
+void quantize_row_q8_0(const float* x, std::size_t n, std::byte* out);
 
 // ggml Q4_0 block: fp16 scale d then 32 4-bit quants packed two per byte. the
 // 18-byte stride leaves d unaligned in the mmap, so never load through a view.
@@ -45,7 +45,7 @@ static_assert(sizeof(BlockQ4_0) == 18);
 // dequantizes in values of one Q4_0 row (in/32 blocks from block_base) into
 // out: within each byte the low nibble is element j and the high nibble is
 // element j+16, both mapped as d*(nibble-8). in must be a multiple of 32.
-void dequant_row_q4_0(const std::byte *block_base, std::size_t in, float *out);
+void dequant_row_q4_0(const std::byte* block_base, std::size_t in, float* out);
 
 // ggml Q5_0 block: fp16 scale d, a 32-bit fifth-bit field qh, then 32 low
 // 4-bit quants packed two per byte. d and qh sit unaligned in the mmap.
@@ -59,7 +59,7 @@ static_assert(sizeof(BlockQ5_0) == 22);
 // dequantizes in values of one Q5_0 row (in/32 blocks from block_base) into
 // out: each 5-bit value is the low nibble plus its fifth bit from qh, mapped
 // as d*(value-16). in must be a multiple of 32.
-void dequant_row_q5_0(const std::byte *block_base, std::size_t in, float *out);
+void dequant_row_q5_0(const std::byte* block_base, std::size_t in, float* out);
 
 constexpr std::size_t kSuperBlockSize = 256;
 
@@ -85,15 +85,15 @@ static_assert(sizeof(BlockQ6_K) == 210);
 
 // dequantizes in values of one Q4_K row (in/256 super-blocks from block_base)
 // into out. in must be a multiple of 256.
-void dequant_row_q4_k(const std::byte *block_base, std::size_t in, float *out);
+void dequant_row_q4_k(const std::byte* block_base, std::size_t in, float* out);
 
 // dequantizes in values of one Q6_K row (in/256 super-blocks from block_base)
 // into out. in must be a multiple of 256.
-void dequant_row_q6_k(const std::byte *block_base, std::size_t in, float *out);
+void dequant_row_q6_k(const std::byte* block_base, std::size_t in, float* out);
 
 // dequantizes one weight row into out ([in]) per w.type.
-void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float *out);
+void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float* out);
 
-} // namespace dbinfer::tensor
+}  // namespace dbinfer::tensor
 
-#endif // DBINFER_TENSOR_DEQUANT_HPP
+#endif  // DBINFER_TENSOR_DEQUANT_HPP

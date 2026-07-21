@@ -22,20 +22,18 @@ namespace {
 // falls back to a copy.
 constexpr std::uintptr_t kPageSize = 16384;
 
-bool page_aligned(const void *p) {
+bool page_aligned(const void* p) {
   return (reinterpret_cast<std::uintptr_t>(p) & (kPageSize - 1)) == 0;
 }
 
-std::size_t round_up_page(std::size_t n) {
-  return (n + kPageSize - 1) & ~(kPageSize - 1);
-}
+std::size_t round_up_page(std::size_t n) { return (n + kPageSize - 1) & ~(kPageSize - 1); }
 
 // fast-math is disabled at compile time so the elementwise ops fuse and round
 // like the scalar CPU path. mul_mat still calls fma explicitly, so its bitwise
 // match with matvec_f16 is unaffected. rmsnorm and the attention dot sum
 // sequentially per output, matching the CPU reduction; cos/sin/exp run in fp32
 // and diverge from the double CPU transcendentals only within tolerance.
-constexpr const char *kShaderSource = R"MSL(
+constexpr const char* kShaderSource = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -466,7 +464,7 @@ kernel void mul_mat_q4_0_g3(device const uchar *W0 [[buffer(0)]],
 // this reorders the reduction vs the CPU sequential matmul, so it is tolerance
 // gated (atol 1e-3), never bitwise. compiled as a separate library so a driver
 // without simdgroup_matrix leaves the main decode kernels intact.
-constexpr const char *kGemmShaderSource = R"MSL(
+constexpr const char* kGemmShaderSource = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -569,33 +567,43 @@ struct LayerGpu {
 
 std::size_t weight_bytes(WeightType t, std::size_t out, std::size_t in) {
   switch (t) {
-  case WeightType::F16:
-    return out * in * sizeof(std::uint16_t);
-  case WeightType::Q8_0:
-    return out * (in / 32) * 34;
-  case WeightType::Q4_0:
-    return out * (in / 32) * 18;
+    case WeightType::F16:
+      return out * in * sizeof(std::uint16_t);
+    case WeightType::Q8_0:
+      return out * (in / 32) * 34;
+    case WeightType::Q4_0:
+      return out * (in / 32) * 18;
   }
   return 0;
 }
 
 class MetalBackend final : public Backend {
-public:
-  MetalBackend(id<MTLDevice> device, id<MTLCommandQueue> queue,
-               id<MTLComputePipelineState> mul_mat, id<MTLComputePipelineState> rmsnorm,
-               id<MTLComputePipelineState> rope, id<MTLComputePipelineState> attention,
-               id<MTLComputePipelineState> add_inplace, id<MTLComputePipelineState> swiglu,
-               id<MTLComputePipelineState> quant_q8, id<MTLComputePipelineState> mul_mat_q8,
-               id<MTLComputePipelineState> mul_mat_q4, id<MTLComputePipelineState> mul_mat_g3,
-               id<MTLComputePipelineState> mul_mat_q8_g3, id<MTLComputePipelineState> mul_mat_q4_g3,
-               id<MTLComputePipelineState> gemm)
-      : device_(device), queue_(queue), mul_mat_(mul_mat), rmsnorm_(rmsnorm), rope_(rope),
-        attention_(attention), add_inplace_(add_inplace), swiglu_(swiglu), quant_q8_(quant_q8),
-        mul_mat_q8_(mul_mat_q8), mul_mat_q4_(mul_mat_q4), mul_mat_g3_(mul_mat_g3),
-        mul_mat_q8_g3_(mul_mat_q8_g3), mul_mat_q4_g3_(mul_mat_q4_g3), gemm_(gemm) {}
+ public:
+  MetalBackend(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLComputePipelineState> mul_mat,
+               id<MTLComputePipelineState> rmsnorm, id<MTLComputePipelineState> rope,
+               id<MTLComputePipelineState> attention, id<MTLComputePipelineState> add_inplace,
+               id<MTLComputePipelineState> swiglu, id<MTLComputePipelineState> quant_q8,
+               id<MTLComputePipelineState> mul_mat_q8, id<MTLComputePipelineState> mul_mat_q4,
+               id<MTLComputePipelineState> mul_mat_g3, id<MTLComputePipelineState> mul_mat_q8_g3,
+               id<MTLComputePipelineState> mul_mat_q4_g3, id<MTLComputePipelineState> gemm)
+      : device_(device),
+        queue_(queue),
+        mul_mat_(mul_mat),
+        rmsnorm_(rmsnorm),
+        rope_(rope),
+        attention_(attention),
+        add_inplace_(add_inplace),
+        swiglu_(swiglu),
+        quant_q8_(quant_q8),
+        mul_mat_q8_(mul_mat_q8),
+        mul_mat_q4_(mul_mat_q4),
+        mul_mat_g3_(mul_mat_g3),
+        mul_mat_q8_g3_(mul_mat_q8_g3),
+        mul_mat_q4_g3_(mul_mat_q4_g3),
+        gemm_(gemm) {}
 
-  [[nodiscard]] std::expected<void, Error> mul_mat_f16(const std::uint16_t *W, const float *A,
-                                                       float *C, std::size_t m, std::size_t out,
+  [[nodiscard]] std::expected<void, Error> mul_mat_f16(const std::uint16_t* W, const float* A,
+                                                       float* C, std::size_t m, std::size_t out,
                                                        std::size_t in) override {
     @autoreleasepool {
       const std::size_t w_bytes = out * in * sizeof(std::uint16_t);
@@ -603,8 +611,7 @@ public:
       const std::size_t c_bytes = m * out * sizeof(float);
 
       id<MTLBuffer> buf_w = wrap_weights(W, w_bytes);
-      if (buf_w == nil)
-        return std::unexpected(Error{"metal: failed to allocate weight buffer"});
+      if (buf_w == nil) return std::unexpected(Error{"metal: failed to allocate weight buffer"});
       // activations are freshly allocated host memory with no page-alignment
       // guarantee, so copy them in. weights are the tensors that must not copy.
       id<MTLBuffer> buf_a = new_from(A, a_bytes);
@@ -626,8 +633,8 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> quantize_q8_0(const float *x, std::size_t rows,
-                                                         std::size_t in, std::byte *out) override {
+  [[nodiscard]] std::expected<void, Error> quantize_q8_0(const float* x, std::size_t rows,
+                                                         std::size_t in, std::byte* out) override {
     @autoreleasepool {
       const std::size_t nblocks = in / 32;
       const std::size_t a_bytes = rows * in * sizeof(float);
@@ -651,22 +658,23 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> mul_mat_q8_0(const std::byte *W, const float *A,
-                                                        float *C, std::size_t m, std::size_t out,
+  [[nodiscard]] std::expected<void, Error> mul_mat_q8_0(const std::byte* W, const float* A,
+                                                        float* C, std::size_t m, std::size_t out,
                                                         std::size_t in) override {
     return mul_mat_quant(mul_mat_q8_, W, (in / 32) * kQ8BlockBytes, A, C, m, out, in);
   }
 
-  [[nodiscard]] std::expected<void, Error> mul_mat_q4_0(const std::byte *W, const float *A,
-                                                        float *C, std::size_t m, std::size_t out,
+  [[nodiscard]] std::expected<void, Error> mul_mat_q4_0(const std::byte* W, const float* A,
+                                                        float* C, std::size_t m, std::size_t out,
                                                         std::size_t in) override {
     return mul_mat_quant(mul_mat_q4_, W, (in / 32) * 18, A, C, m, out, in);
   }
 
-  [[nodiscard]] std::expected<void, Error>
-  mul_mat_group(WeightType type, std::span<const std::byte *const> weights,
-                std::span<const std::size_t> outs, const float *A, std::span<float *const> C,
-                std::size_t in) override {
+  [[nodiscard]] std::expected<void, Error> mul_mat_group(WeightType type,
+                                                         std::span<const std::byte* const> weights,
+                                                         std::span<const std::size_t> outs,
+                                                         const float* A, std::span<float* const> C,
+                                                         std::size_t in) override {
     const std::size_t g = weights.size();
     if (g < 2 || g > 3 || outs.size() != g || C.size() != g)
       return std::unexpected(Error{"metal: mul_mat_group needs 2 or 3 matched weights"});
@@ -694,9 +702,8 @@ public:
 
       id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
       id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      if (type != WeightType::F16)
-        encode_quant_q8(enc, buf_a, buf_aq, 1, in / 32);
-      const GpuWeight *w2 = g == 3 ? &w[2] : nullptr;
+      if (type != WeightType::F16) encode_quant_q8(enc, buf_a, buf_aq, 1, in / 32);
+      const GpuWeight* w2 = g == 3 ? &w[2] : nullptr;
       id<MTLBuffer> c2 = g == 3 ? cbuf[2] : nil;
       encode_group(enc, w[0], w[1], w2, buf_a, buf_aq, cbuf[0], 0, cbuf[1], 0, c2, 0);
       [enc endEncoding];
@@ -711,11 +718,11 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> mul_mat_f16_gemm(const std::uint16_t *W, const float *A,
-                                                            float *C, std::size_t m, std::size_t out,
+  [[nodiscard]] std::expected<void, Error> mul_mat_f16_gemm(const std::uint16_t* W, const float* A,
+                                                            float* C, std::size_t m,
+                                                            std::size_t out,
                                                             std::size_t in) override {
-    if (gemm_ == nil)
-      return std::unexpected(Error{"metal: simdgroup_matrix gemm unavailable"});
+    if (gemm_ == nil) return std::unexpected(Error{"metal: simdgroup_matrix gemm unavailable"});
     @autoreleasepool {
       const std::size_t mp = round8(m);
       const std::size_t np = round8(out);
@@ -727,8 +734,7 @@ public:
         std::memcpy(ap.data() + r * kp, A + r * in, in * sizeof(float));
       std::vector<float> wp(np * kp, 0.0f);
       for (std::size_t o = 0; o < out; ++o)
-        for (std::size_t i = 0; i < in; ++i)
-          wp[o * kp + i] = half_to_f32(W[o * in + i]);
+        for (std::size_t i = 0; i < in; ++i) wp[o * kp + i] = half_to_f32(W[o * in + i]);
 
       id<MTLBuffer> buf_a = new_from(ap.data(), ap.size() * sizeof(float));
       id<MTLBuffer> buf_w = new_from(wp.data(), wp.size() * sizeof(float));
@@ -754,15 +760,15 @@ public:
       if (cmd.status != MTLCommandBufferStatusCompleted)
         return std::unexpected(Error{"metal: gemm command buffer did not complete"});
 
-      const float *cp = static_cast<const float *>(buf_c.contents);
+      const float* cp = static_cast<const float*>(buf_c.contents);
       for (std::size_t r = 0; r < m; ++r)
         std::memcpy(C + r * out, cp + r * np, out * sizeof(float));
     }
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> rmsnorm(const float *x, const float *weight, float eps,
-                                                   float *out, std::size_t rows,
+  [[nodiscard]] std::expected<void, Error> rmsnorm(const float* x, const float* weight, float eps,
+                                                   float* out, std::size_t rows,
                                                    std::size_t dim) override {
     @autoreleasepool {
       const std::size_t n = rows * dim;
@@ -786,7 +792,7 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> rope(float *x, const std::int32_t *positions,
+  [[nodiscard]] std::expected<void, Error> rope(float* x, const std::int32_t* positions,
                                                 float theta, std::size_t n_heads, std::size_t seq,
                                                 std::size_t head_dim) override {
     @autoreleasepool {
@@ -810,10 +816,11 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error>
-  attention(const float *q, const float *k_cache, const float *v_cache, float *out,
-            std::size_t n_positions, std::size_t n_heads, std::size_t n_kv_heads,
-            std::size_t head_dim) override {
+  [[nodiscard]] std::expected<void, Error> attention(const float* q, const float* k_cache,
+                                                     const float* v_cache, float* out,
+                                                     std::size_t n_positions, std::size_t n_heads,
+                                                     std::size_t n_kv_heads,
+                                                     std::size_t head_dim) override {
     @autoreleasepool {
       const std::size_t pos_stride = n_kv_heads * head_dim;
       const std::size_t out_n = n_heads * head_dim;
@@ -840,22 +847,24 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error>
-  setup_offload(std::span<const LayerQ> layers, float *k_base, float *v_base, std::size_t capacity,
-                std::size_t pos_stride, const float *output_norm, QWeight lm_head,
-                std::size_t vocab_size) override {
+  [[nodiscard]] std::expected<void, Error> setup_offload(std::span<const LayerQ> layers,
+                                                         float* k_base, float* v_base,
+                                                         std::size_t capacity,
+                                                         std::size_t pos_stride,
+                                                         const float* output_norm, QWeight lm_head,
+                                                         std::size_t vocab_size) override {
     @autoreleasepool {
       offload_.clear();
       cache_capacity_ = capacity;
       cache_pos_stride_ = pos_stride;
       const std::size_t kv_bytes = layers.size() * capacity * pos_stride * sizeof(float);
-      cache_k_ = wrap_bytes(reinterpret_cast<const std::byte *>(k_base), kv_bytes);
-      cache_v_ = wrap_bytes(reinterpret_cast<const std::byte *>(v_base), kv_bytes);
+      cache_k_ = wrap_bytes(reinterpret_cast<const std::byte*>(k_base), kv_bytes);
+      cache_v_ = wrap_bytes(reinterpret_cast<const std::byte*>(v_base), kv_bytes);
       if (cache_k_ == nil || cache_v_ == nil)
         return std::unexpected(Error{"metal: failed to wrap KV cache"});
 
       offload_.reserve(layers.size());
-      for (const LayerQ &L : layers) {
+      for (const LayerQ& L : layers) {
         LayerGpu g;
         g.dim = static_cast<std::uint32_t>(L.dim);
         g.ff = static_cast<std::uint32_t>(L.ff);
@@ -895,15 +904,13 @@ public:
           return std::unexpected(Error{"metal: failed to allocate lm_head buffers"});
       }
 
-      if (auto e = alloc_scratch(); !e)
-        return e;
+      if (auto e = alloc_scratch(); !e) return e;
     }
     return {};
   }
 
-  [[nodiscard]] std::expected<void, Error> decode_token(float *x, std::int32_t pos) override {
-    if (offload_.empty())
-      return std::unexpected(Error{"metal: decode_token before setup_offload"});
+  [[nodiscard]] std::expected<void, Error> decode_token(float* x, std::int32_t pos) override {
+    if (offload_.empty()) return std::unexpected(Error{"metal: decode_token before setup_offload"});
     @autoreleasepool {
       const std::uint32_t dim = offload_.front().dim;
       std::memcpy(buf_x_.contents, x, dim * sizeof(float));
@@ -923,8 +930,8 @@ public:
     return {};
   }
 
-  [[nodiscard]] std::expected<const float *, Error> decode_token_full(const float *x,
-                                                                      std::int32_t pos) override {
+  [[nodiscard]] std::expected<const float*, Error> decode_token_full(const float* x,
+                                                                     std::int32_t pos) override {
     if (offload_.empty())
       return std::unexpected(Error{"metal: decode_token_full before setup_offload"});
     if (head_w_.buf == nil)
@@ -949,10 +956,10 @@ public:
       if (cmd.status != MTLCommandBufferStatusCompleted)
         return std::unexpected(Error{"metal: decode_token_full command buffer did not complete"});
     }
-    return static_cast<const float *>(logits_buf_.contents);
+    return static_cast<const float*>(logits_buf_.contents);
   }
 
-private:
+ private:
   struct Scratch {
     id<MTLBuffer> normed;
     id<MTLBuffer> normed_q;
@@ -974,7 +981,7 @@ private:
     return static_cast<float>(v);
   }
 
-  GpuWeight make_weight(const QWeight &w, std::size_t out, std::size_t in) {
+  GpuWeight make_weight(const QWeight& w, std::size_t out, std::size_t in) {
     const std::size_t bytes = weight_bytes(w.type, out, in);
     GpuWeight g;
     g.type = w.type;
@@ -1009,23 +1016,23 @@ private:
   // one weight matmul, dispatching on dtype. c is written at byte offset c_off,
   // used to land QKV projections directly at the KV cache slot. quant weights
   // read the pre-quantized activation aq, F16 reads the fp32 a.
-  void encode_weight(id<MTLComputeCommandEncoder> enc, const GpuWeight &w, id<MTLBuffer> a,
+  void encode_weight(id<MTLComputeCommandEncoder> enc, const GpuWeight& w, id<MTLBuffer> a,
                      id<MTLBuffer> aq, id<MTLBuffer> c, std::size_t c_off, bool add_res = false) {
     switch (w.type) {
-    case WeightType::F16:
-      encode_mul_mat(enc, w.buf, 0, a, c, 1, w.out, w.in, c_off, add_res);
-      return;
-    case WeightType::Q8_0:
-      encode_mul_mat_quant(enc, mul_mat_q8_, w.buf, aq, c, 1, w.out, w.in, c_off, add_res);
-      return;
-    case WeightType::Q4_0:
-      encode_mul_mat_quant(enc, mul_mat_q4_, w.buf, aq, c, 1, w.out, w.in, c_off, add_res);
-      return;
+      case WeightType::F16:
+        encode_mul_mat(enc, w.buf, 0, a, c, 1, w.out, w.in, c_off, add_res);
+        return;
+      case WeightType::Q8_0:
+        encode_mul_mat_quant(enc, mul_mat_q8_, w.buf, aq, c, 1, w.out, w.in, c_off, add_res);
+        return;
+      case WeightType::Q4_0:
+        encode_mul_mat_quant(enc, mul_mat_q4_, w.buf, aq, c, 1, w.out, w.in, c_off, add_res);
+        return;
     }
   }
 
-  void encode_layer(id<MTLComputeCommandEncoder> enc, const LayerGpu &L, std::size_t layer_idx,
-                    id<MTLBuffer> buf_x, const Scratch &s, std::int32_t pos) {
+  void encode_layer(id<MTLComputeCommandEncoder> enc, const LayerGpu& L, std::size_t layer_idx,
+                    id<MTLBuffer> buf_x, const Scratch& s, std::int32_t pos) {
     const std::uint32_t dim = L.dim;
     const std::uint32_t ff = L.ff;
     const std::uint32_t q_n = L.nh * L.hd;
@@ -1039,25 +1046,21 @@ private:
     if (quant_any(L.wq.type, L.wk.type, L.wv.type))
       encode_quant_q8(enc, s.normed, s.normed_q, 1, dim / 32);
     if (same_group(L.wq, L.wk) && same_group(L.wq, L.wv)) {
-      encode_group(enc, L.wq, L.wk, &L.wv, s.normed, s.normed_q, s.q, 0, cache_k_, slot_off, cache_v_,
-                   slot_off);
+      encode_group(enc, L.wq, L.wk, &L.wv, s.normed, s.normed_q, s.q, 0, cache_k_, slot_off,
+                   cache_v_, slot_off);
     } else {
       encode_weight(enc, L.wq, s.normed, s.normed_q, s.q, 0);
       encode_weight(enc, L.wk, s.normed, s.normed_q, cache_k_, slot_off);
       encode_weight(enc, L.wv, s.normed, s.normed_q, cache_v_, slot_off);
     }
-    if (L.bq)
-      encode_add(enc, s.q, 0, L.bq, q_n);
-    if (L.bk)
-      encode_add(enc, cache_k_, slot_off, L.bk, pos_stride);
-    if (L.bv)
-      encode_add(enc, cache_v_, slot_off, L.bv, pos_stride);
+    if (L.bq) encode_add(enc, s.q, 0, L.bq, q_n);
+    if (L.bk) encode_add(enc, cache_k_, slot_off, L.bk, pos_stride);
+    if (L.bv) encode_add(enc, cache_v_, slot_off, L.bv, pos_stride);
     encode_rope_pos(enc, s.q, 0, pos, L.theta, L.nh, L.hd);
     encode_rope_pos(enc, cache_k_, slot_off, pos, L.theta, L.nkv, L.hd);
     encode_attention(enc, s.q, 0, cache_k_, layer_base, cache_v_, layer_base, s.attn, s.scores,
                      n_pos, L.nh, L.nkv, L.hd);
-    if (quant_any(L.wo.type))
-      encode_quant_q8(enc, s.attn, s.attn_q, 1, q_n / 32);
+    if (quant_any(L.wo.type)) encode_quant_q8(enc, s.attn, s.attn_q, 1, q_n / 32);
     // fold the attention residual into the output projection epilogue.
     encode_weight(enc, L.wo, s.attn, s.attn_q, buf_x, 0, /*add_res=*/true);
 
@@ -1071,8 +1074,7 @@ private:
       encode_weight(enc, L.wup, s.normed, s.normed_q, s.up, 0);
     }
     encode_swiglu(enc, s.gate, s.up, ff);
-    if (quant_any(L.wdown.type))
-      encode_quant_q8(enc, s.gate, s.gate_q, 1, ff / 32);
+    if (quant_any(L.wdown.type)) encode_quant_q8(enc, s.gate, s.gate_q, 1, ff / 32);
     // fold the ffn residual into the down projection epilogue.
     encode_weight(enc, L.wdown, s.gate, s.gate_q, buf_x, 0, /*add_res=*/true);
   }
@@ -1083,7 +1085,7 @@ private:
   }
   static bool quant_any(WeightType a, WeightType b) { return quant_any(a) || quant_any(b); }
 
-private:
+ private:
   void encode_mul_mat(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> w, std::size_t w_off,
                       id<MTLBuffer> a, id<MTLBuffer> c, std::size_t m, std::size_t out,
                       std::size_t in, std::size_t c_off = 0, bool add_res = false) {
@@ -1103,8 +1105,8 @@ private:
   // quantizes A to Q8_0 then dots against the quant weight W, both in one serial
   // encoder so the matvec reads the freshly quantized activation. row_bytes is
   // the packed weight row stride (Q8_0 34/block, Q4_0 18/block).
-  std::expected<void, Error> mul_mat_quant(id<MTLComputePipelineState> pipe, const std::byte *W,
-                                           std::size_t row_bytes, const float *A, float *C,
+  std::expected<void, Error> mul_mat_quant(id<MTLComputePipelineState> pipe, const std::byte* W,
+                                           std::size_t row_bytes, const float* A, float* C,
                                            std::size_t m, std::size_t out, std::size_t in) {
     @autoreleasepool {
       const std::size_t nblocks = in / 32;
@@ -1165,15 +1167,15 @@ private:
 
   // batchable when the siblings share dtype and input width, the invariant the
   // grouped kernel relies on for a single shared input and one dispatch.
-  static bool same_group(const GpuWeight &a, const GpuWeight &b) {
+  static bool same_group(const GpuWeight& a, const GpuWeight& b) {
     return a.type == b.type && a.in == b.in;
   }
 
   // two or three sibling weights sharing input a (F16) or aq (quant), written to
   // c0/c1/c2 at their offsets, in one dispatch over out0+out1+out2 rows. w2 null
   // encodes a two-weight group, aliasing the third slots so validation passes.
-  void encode_group(id<MTLComputeCommandEncoder> enc, const GpuWeight &w0, const GpuWeight &w1,
-                    const GpuWeight *w2, id<MTLBuffer> a, id<MTLBuffer> aq, id<MTLBuffer> c0,
+  void encode_group(id<MTLComputeCommandEncoder> enc, const GpuWeight& w0, const GpuWeight& w1,
+                    const GpuWeight* w2, id<MTLBuffer> a, id<MTLBuffer> aq, id<MTLBuffer> c0,
                     std::size_t c0_off, id<MTLBuffer> c1, std::size_t c1_off, id<MTLBuffer> c2,
                     std::size_t c2_off) {
     const std::uint32_t out2 = w2 ? w2->out : 0;
@@ -1281,7 +1283,7 @@ private:
     [enc dispatchThreads:grid threadsPerThreadgroup:group];
   }
 
-  id<MTLBuffer> new_from(const void *p, std::size_t bytes) {
+  id<MTLBuffer> new_from(const void* p, std::size_t bytes) {
     return [device_ newBufferWithBytes:p length:bytes options:MTLResourceStorageModeShared];
   }
 
@@ -1292,13 +1294,13 @@ private:
   // zero-copy when the weight pointer is page-aligned, matching DBMF tensors.
   // rounding the length up to a page stays inside the file's page-granular
   // mapping. an unaligned gguf mmap pointer copies instead.
-  id<MTLBuffer> wrap_weights(const std::uint16_t *W, std::size_t bytes) {
-    return wrap_bytes(reinterpret_cast<const std::byte *>(W), bytes);
+  id<MTLBuffer> wrap_weights(const std::uint16_t* W, std::size_t bytes) {
+    return wrap_bytes(reinterpret_cast<const std::byte*>(W), bytes);
   }
 
-  id<MTLBuffer> wrap_bytes(const std::byte *p, std::size_t bytes) {
+  id<MTLBuffer> wrap_bytes(const std::byte* p, std::size_t bytes) {
     if (page_aligned(p))
-      return [device_ newBufferWithBytesNoCopy:const_cast<std::byte *>(p)
+      return [device_ newBufferWithBytesNoCopy:const_cast<std::byte*>(p)
                                         length:round_up_page(bytes)
                                        options:MTLResourceStorageModeShared
                                    deallocator:nil];
@@ -1338,13 +1340,13 @@ private:
 };
 
 id<MTLComputePipelineState> make_pipeline(id<MTLDevice> device, id<MTLLibrary> lib,
-                                          const char *name) {
+                                          const char* name) {
   id<MTLFunction> fn = [lib newFunctionWithName:[NSString stringWithUTF8String:name]];
   if (fn == nil) {
     std::fprintf(stderr, "metal: %s function not found\n", name);
     return nil;
   }
-  NSError *err = nil;
+  NSError* err = nil;
   id<MTLComputePipelineState> pipe = [device newComputePipelineStateWithFunction:fn error:&err];
   if (pipe == nil)
     std::fprintf(stderr, "metal: %s pipeline creation failed: %s\n", name,
@@ -1367,10 +1369,10 @@ std::unique_ptr<MetalBackend> build_backend() {
 
     // safe math so the elementwise reductions round like the scalar CPU path.
     // mul_mat's explicit fma keeps its bitwise match regardless.
-    MTLCompileOptions *opts = [[MTLCompileOptions alloc] init];
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
     opts.mathMode = MTLMathModeSafe;
-    NSError *err = nil;
-    NSString *src = [NSString stringWithUTF8String:kShaderSource];
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kShaderSource];
     id<MTLLibrary> library = [device newLibraryWithSource:src options:opts error:&err];
     if (library == nil) {
       std::fprintf(stderr, "metal: shader compile failed: %s\n",
@@ -1390,17 +1392,17 @@ std::unique_ptr<MetalBackend> build_backend() {
     id<MTLComputePipelineState> mul_mat_g3 = make_pipeline(device, library, "mul_mat_f16_g3");
     id<MTLComputePipelineState> mul_mat_q8_g3 = make_pipeline(device, library, "mul_mat_q8_0_g3");
     id<MTLComputePipelineState> mul_mat_q4_g3 = make_pipeline(device, library, "mul_mat_q4_0_g3");
-    if (mul_mat == nil || rmsnorm == nil || rope == nil || attention == nil ||
-        add_inplace == nil || swiglu == nil || quant_q8 == nil || mul_mat_q8 == nil ||
-        mul_mat_q4 == nil || mul_mat_g3 == nil || mul_mat_q8_g3 == nil || mul_mat_q4_g3 == nil)
+    if (mul_mat == nil || rmsnorm == nil || rope == nil || attention == nil || add_inplace == nil ||
+        swiglu == nil || quant_q8 == nil || mul_mat_q8 == nil || mul_mat_q4 == nil ||
+        mul_mat_g3 == nil || mul_mat_q8_g3 == nil || mul_mat_q4_g3 == nil)
       return nullptr;
 
     // the simdgroup_matrix GEMM compiles into its own library so a driver that
     // rejects the op leaves the decode kernels above intact; gemm_ stays nil and
     // the m>1 GEMM method reports unavailable.
     id<MTLComputePipelineState> gemm = nil;
-    NSError *gerr = nil;
-    NSString *gsrc = [NSString stringWithUTF8String:kGemmShaderSource];
+    NSError* gerr = nil;
+    NSString* gsrc = [NSString stringWithUTF8String:kGemmShaderSource];
     id<MTLLibrary> glib = [device newLibraryWithSource:gsrc options:opts error:&gerr];
     if (glib != nil)
       gemm = make_pipeline(device, glib, "gemm_f32");
@@ -1414,21 +1416,19 @@ std::unique_ptr<MetalBackend> build_backend() {
   }
 }
 
-} // namespace
+}  // namespace
 
-Backend *metal_backend() {
+Backend* metal_backend() {
   static const std::unique_ptr<MetalBackend> instance = build_backend();
   return instance.get();
 }
 
-bool metal_can_wrap_nocopy(const void *ptr, std::size_t bytes) {
-  if (!page_aligned(ptr))
-    return false;
+bool metal_can_wrap_nocopy(const void* ptr, std::size_t bytes) {
+  if (!page_aligned(ptr)) return false;
   @autoreleasepool {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    if (device == nil)
-      return false;
-    id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:const_cast<void *>(ptr)
+    if (device == nil) return false;
+    id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:const_cast<void*>(ptr)
                                                   length:round_up_page(bytes)
                                                  options:MTLResourceStorageModeShared
                                              deallocator:nil];
@@ -1436,4 +1436,4 @@ bool metal_can_wrap_nocopy(const void *ptr, std::size_t bytes) {
   }
 }
 
-} // namespace dbinfer::backend
+}  // namespace dbinfer::backend

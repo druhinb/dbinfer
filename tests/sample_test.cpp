@@ -9,15 +9,14 @@
 
 namespace {
 int g_failures = 0;
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok)
-    ++g_failures;
+  if (!ok) ++g_failures;
 }
 
 using dbinfer::sample::Candidate;
 
-std::vector<Candidate> make(const std::vector<float> &logits) {
+std::vector<Candidate> make(const std::vector<float>& logits) {
   std::vector<Candidate> c;
   c.reserve(logits.size());
   for (std::size_t i = 0; i < logits.size(); ++i)
@@ -25,15 +24,14 @@ std::vector<Candidate> make(const std::vector<float> &logits) {
   return c;
 }
 
-std::set<std::int32_t> ids(const std::vector<Candidate> &c) {
+std::set<std::int32_t> ids(const std::vector<Candidate>& c) {
   std::set<std::int32_t> s;
-  for (const Candidate &x : c)
-    s.insert(x.id);
+  for (const Candidate& x : c) s.insert(x.id);
   return s;
 }
 
 bool approx(float a, float b, float eps = 1e-6f) { return std::fabs(a - b) <= eps; }
-} // namespace
+}  // namespace
 
 int main() {
   using namespace dbinfer::sample;
@@ -68,7 +66,6 @@ int main() {
   }
 
   {
-
     auto c = make({std::log(0.5f), std::log(0.3f), std::log(0.15f), std::log(0.05f)});
     top_p(c, 0.7f);
     check((ids(c) == std::set<std::int32_t>{0, 1}), "top-p inclusive cutoff keeps {0,1}");
@@ -98,8 +95,7 @@ int main() {
     std::vector<std::vector<float>> cases = {
         {0.1f, 0.9f, 0.3f}, {5.0f, 1.0f, 5.0f, 5.0f}, {-3.0f, -2.0f, -2.0f}};
     bool ok = true;
-    for (auto &v : cases)
-      ok = ok && s.sample(v.data(), v.size()) == argmax(v.data(), v.size());
+    for (auto& v : cases) ok = ok && s.sample(v.data(), v.size()) == argmax(v.data(), v.size());
     check(ok, "temperature 0 equals greedy argmax");
   }
 
@@ -114,7 +110,7 @@ int main() {
                                              {-2.0f, 3.0f, 0.5f},
                                              {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f}};
     std::vector<std::int32_t> seq_a, seq_b;
-    for (auto &v : draws) {
+    for (auto& v : draws) {
       seq_a.push_back(a.sample(v.data(), v.size()));
       seq_b.push_back(b.sample(v.data(), v.size()));
     }
@@ -167,8 +163,7 @@ int main() {
     std::vector<std::int32_t> recent = {0, 1, 2, 3};
     apply_penalties(c, recent, 1.0f, 0.0f, 0.0f);
     bool same = true;
-    for (std::size_t i = 0; i < c.size(); ++i)
-      same = same && c[i].logit == before[i].logit;
+    for (std::size_t i = 0; i < c.size(); ++i) same = same && c[i].logit == before[i].logit;
     check(same, "default penalties are a bit-identical no-op");
   }
   {
@@ -203,7 +198,7 @@ int main() {
         {0.1f, 0.9f, 0.3f}, {5.0f, 1.0f, 5.0f, 5.0f}, {-3.0f, -2.0f, -2.0f}};
     std::vector<std::int32_t> recent = {0, 1};
     bool ok = true;
-    for (auto &v : cases)
+    for (auto& v : cases)
       ok = ok && s.sample(v.data(), v.size(), recent) == argmax(v.data(), v.size());
     check(ok, "greedy with default penalties equals argmax");
   }

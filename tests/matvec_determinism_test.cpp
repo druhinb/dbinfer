@@ -1,14 +1,13 @@
-#include "model/model.hpp"
-
-#include "gguf/gguf.hpp"
-#include "tensor/cpu.hpp"
-#include "tensor/thread_pool.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
+
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
+#include "tensor/cpu.hpp"
+#include "tensor/thread_pool.hpp"
 
 // the fp32 matvec/attention parallelization must be bitwise-identical to the
 // single-thread path. runs a fixed prompt through a fresh model at one thread
@@ -25,8 +24,8 @@ std::vector<std::int32_t> make_prompt() {
   return ids;
 }
 
-std::vector<float> run_forward(const char *path, std::size_t threads,
-                               const std::vector<std::int32_t> &ids) {
+std::vector<float> run_forward(const char* path, std::size_t threads,
+                               const std::vector<std::int32_t>& ids) {
   dbinfer::tensor::configure_thread_count(threads);
   auto loaded = dbinfer::gguf::load(path);
   if (!loaded) {
@@ -40,28 +39,26 @@ std::vector<float> run_forward(const char *path, std::size_t threads,
     ++g_failures;
     return {};
   }
-  dbinfer::model::Model &model = *mret;
+  dbinfer::model::Model& model = *mret;
   const std::size_t vocab = model.config().vocab_size;
   std::vector<float> out(ids.size() * vocab);
   for (std::size_t s = 0; s < ids.size(); ++s) {
-    const float *l = model.forward(ids[s], static_cast<std::int32_t>(s));
+    const float* l = model.forward(ids[s], static_cast<std::int32_t>(s));
     std::memcpy(out.data() + s * vocab, l, vocab * sizeof(float));
   }
   return out;
 }
 
-void check(const char *label, const char *path, const std::vector<std::int32_t> &ids,
+void check(const char* label, const char* path, const std::vector<std::int32_t>& ids,
            std::size_t P) {
   std::vector<float> single = run_forward(path, 1, ids);
   std::vector<float> multi = run_forward(path, P, ids);
-  if (single.empty() || multi.empty())
-    return;
+  if (single.empty() || multi.empty()) return;
   if (single.size() != multi.size() ||
       std::memcmp(single.data(), multi.data(), single.size() * sizeof(float)) != 0) {
     std::size_t diffs = 0;
     for (std::size_t i = 0; i < single.size(); ++i)
-      if (std::memcmp(&single[i], &multi[i], sizeof(float)) != 0)
-        ++diffs;
+      if (std::memcmp(&single[i], &multi[i], sizeof(float)) != 0) ++diffs;
     std::printf("FAIL %-6s %zu/%zu logits differ between threads 1 and %zu\n", label, diffs,
                 single.size(), P);
     ++g_failures;
@@ -71,7 +68,7 @@ void check(const char *label, const char *path, const std::vector<std::int32_t> 
               single.size(), P);
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   const std::size_t P = dbinfer::tensor::p_core_count();

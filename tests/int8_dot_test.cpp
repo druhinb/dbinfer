@@ -1,6 +1,3 @@
-#include "tensor/dequant.hpp"
-#include "tensor/matmul.hpp"
-
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +5,9 @@
 #include <cstring>
 #include <random>
 #include <vector>
+
+#include "tensor/dequant.hpp"
+#include "tensor/matmul.hpp"
 
 // the int8-dot matvec is the reference activation-quant kernel. two properties
 // pin it: it reproduces the block-scaled integer dot bit for bit, and it stays
@@ -22,7 +22,7 @@ using dbinfer::tensor::kBlockSize;
 
 int g_failures = 0;
 
-void check_eq(const char *what, float got, float want) {
+void check_eq(const char* what, float got, float want) {
   if (got == want) {
     std::printf("PASS %-28s %.9g\n", what, static_cast<double>(got));
   } else {
@@ -32,7 +32,7 @@ void check_eq(const char *what, float got, float want) {
   }
 }
 
-void check_le(const char *what, float got, float bound) {
+void check_le(const char* what, float got, float bound) {
   if (got <= bound) {
     std::printf("PASS %-28s %.6g <= %.6g\n", what, static_cast<double>(got),
                 static_cast<double>(bound));
@@ -45,7 +45,7 @@ void check_le(const char *what, float got, float bound) {
 
 // block-scaled integer dot recomputed independently, the exact value matvec
 // must produce (same order, same per-block fp scale).
-float reference_dot(const std::int8_t *wq, const std::uint16_t *dw, const BlockQ8_0 *xq,
+float reference_dot(const std::int8_t* wq, const std::uint16_t* dw, const BlockQ8_0* xq,
                     std::size_t nblocks) {
   float acc = 0.0f;
   for (std::size_t b = 0; b < nblocks; ++b) {
@@ -58,7 +58,7 @@ float reference_dot(const std::int8_t *wq, const std::uint16_t *dw, const BlockQ
   return acc;
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   using dbinfer::tensor::matvec_q4_0;
@@ -82,11 +82,10 @@ int main() {
 
   for (int trial = 0; trial < 200; ++trial) {
     std::vector<float> x(in);
-    for (float &v : x)
-      v = act(rng);
+    for (float& v : x) v = act(rng);
 
     std::vector<BlockQ8_0> xq(nblocks);
-    quantize_row_q8_0(x.data(), in, reinterpret_cast<std::byte *>(xq.data()));
+    quantize_row_q8_0(x.data(), in, reinterpret_cast<std::byte*>(xq.data()));
 
     // per-element activation quant error, the exact bound on the fp32 gap.
     std::vector<float> xdeq(in);
@@ -111,7 +110,7 @@ int main() {
         }
 
       std::vector<float> y(out);
-      matvec_q8_0(reinterpret_cast<const std::byte *>(w.data()), x.data(), y.data(), out, in);
+      matvec_q8_0(reinterpret_cast<const std::byte*>(w.data()), x.data(), y.data(), out, in);
 
       for (std::size_t o = 0; o < out; ++o) {
         const float ref =
@@ -151,7 +150,7 @@ int main() {
         }
 
       std::vector<float> y(out);
-      matvec_q4_0(reinterpret_cast<const std::byte *>(w.data()), x.data(), y.data(), out, in);
+      matvec_q4_0(reinterpret_cast<const std::byte*>(w.data()), x.data(), y.data(), out, in);
 
       for (std::size_t o = 0; o < out; ++o) {
         const float ref =

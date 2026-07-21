@@ -1,11 +1,11 @@
-#include "tensor/matmul.hpp"
-
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <random>
 #include <vector>
+
+#include "tensor/matmul.hpp"
 
 // matmul_accel reorders the reduction through cblas_sgemm, so it matches the
 // scalar matmul only within GEMM tolerance. this pins the correctness bound
@@ -15,7 +15,7 @@ namespace {
 
 int g_failures = 0;
 
-} // namespace
+}  // namespace
 
 int main() {
   constexpr std::size_t m = 512, out = 512, in = 896;
@@ -23,15 +23,13 @@ int main() {
   std::mt19937 rng(12345);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
   std::vector<float> A(m * in), W(out * in);
-  for (float &v : A)
-    v = dist(rng);
-  for (float &v : W)
-    v = dist(rng);
+  for (float& v : A) v = dist(rng);
+  for (float& v : W) v = dist(rng);
 
   std::vector<float> c_scalar(m * out), c_accel(m * out);
   dbinfer::tensor::matmul(A.data(), W.data(), c_scalar.data(), m, out, in);
 
-  const dbinfer::tensor::QuantMatrix w{reinterpret_cast<const std::byte *>(W.data()),
+  const dbinfer::tensor::QuantMatrix w{reinterpret_cast<const std::byte*>(W.data()),
                                        dbinfer::gguf::GgmlType::F32};
   dbinfer::tensor::matmul_accel(A.data(), w, c_accel.data(), m, out, in);
 

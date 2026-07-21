@@ -1,18 +1,18 @@
 // ctest for the naive matvec/matmul kernels
 
-#include "tensor/matmul.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
 
+#include "tensor/matmul.hpp"
+
 namespace {
 
 int g_failures = 0;
 
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   if (ok) {
     std::printf("PASS %s\n", what);
   } else {
@@ -34,10 +34,8 @@ void test_matvec_rectangular() {
   const std::size_t out = 7, in = 13;
   Lcg rng{0x1234};
   std::vector<float> W(out * in), x(in), y(out);
-  for (auto &w : W)
-    w = rng.next();
-  for (auto &v : x)
-    v = rng.next();
+  for (auto& w : W) w = rng.next();
+  for (auto& v : x) v = rng.next();
 
   dbinfer::tensor::matvec(W.data(), x.data(), y.data(), out, in);
 
@@ -56,10 +54,8 @@ void test_matmul_multirow() {
   const std::size_t m = 5, out = 6, in = 9;
   Lcg rng{0xABCD};
   std::vector<float> A(m * in), W(out * in), C(m * out);
-  for (auto &a : A)
-    a = rng.next();
-  for (auto &w : W)
-    w = rng.next();
+  for (auto& a : A) a = rng.next();
+  for (auto& w : W) w = rng.next();
 
   dbinfer::tensor::matmul(A.data(), W.data(), C.data(), m, out, in);
 
@@ -94,19 +90,17 @@ void test_numpy_fixture() {
   float C[2 * 4];
   dbinfer::tensor::matmul(A, W, C, 2, 4, 3);
   bool c_ok = true;
-  for (std::size_t i = 0; i < 8; ++i)
-    c_ok = c_ok && std::fabs(C[i] - expect_C[i]) <= 1e-5f;
+  for (std::size_t i = 0; i < 8; ++i) c_ok = c_ok && std::fabs(C[i] - expect_C[i]) <= 1e-5f;
   check(c_ok, "matmul matches NumPy fixture C = A @ W.T");
 
   float y[4];
   dbinfer::tensor::matvec(W, x, y, 4, 3);
   bool y_ok = true;
-  for (std::size_t i = 0; i < 4; ++i)
-    y_ok = y_ok && std::fabs(y[i] - expect_y[i]) <= 1e-5f;
+  for (std::size_t i = 0; i < 4; ++i) y_ok = y_ok && std::fabs(y[i] - expect_y[i]) <= 1e-5f;
   check(y_ok, "matvec matches NumPy fixture y = W @ x");
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   test_matvec_rectangular();

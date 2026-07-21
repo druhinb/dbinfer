@@ -36,11 +36,11 @@ enum class GgmlType : std::uint32_t {
   BF16 = 30,
 };
 
-const char *to_string(GgmlType type);
+const char* to_string(GgmlType type);
 
 struct TypeInfo {
-  std::uint64_t block_size = 0; // elements per stored block
-  std::uint64_t type_size = 0;  // bytes per stored block
+  std::uint64_t block_size = 0;  // elements per stored block
+  std::uint64_t type_size = 0;   // bytes per stored block
   bool known = false;
 };
 
@@ -64,7 +64,7 @@ enum class MetaType : std::uint32_t {
   Float64 = 12,
 };
 
-const char *to_string(MetaType type);
+const char* to_string(MetaType type);
 
 struct Error {
   std::string message;
@@ -73,7 +73,7 @@ struct Error {
 };
 
 // "file:offset: message"
-std::string to_string(const Error &err);
+std::string to_string(const Error& err);
 
 struct MetaValue;
 
@@ -93,12 +93,12 @@ struct TensorInfo {
   GgmlType type{};
   std::array<std::uint64_t, 4> shape{1, 1, 1, 1};
   std::uint32_t n_dims = 0;
-  std::uint64_t offset = 0; // relative to the tensor data section
-  const std::byte *data = nullptr;
+  std::uint64_t offset = 0;  // relative to the tensor data section
+  const std::byte* data = nullptr;
   std::uint64_t nbytes = 0;
 };
 
-} // namespace dbinfer::gguf
+}  // namespace dbinfer::gguf
 
 #include "gguf/mmap_file.hpp"
 
@@ -107,7 +107,7 @@ namespace dbinfer::gguf {
 struct GgufFile {
   std::uint32_t version = 0;
   std::uint64_t alignment = 0;
-  std::vector<std::pair<std::string, MetaValue>> metadata; // insertion order
+  std::vector<std::pair<std::string, MetaValue>> metadata;  // insertion order
   std::vector<TensorInfo> tensors;
   MappedFile mapping;
   // decoded tensor bytes for a compressed dbmf container, empty otherwise.
@@ -116,7 +116,7 @@ struct GgufFile {
   MappedFile aux;
 
   // linear scan; metadata is small (dozens of keys) so a map is not worth it
-  const MetaValue *find_meta(std::string_view key) const;
+  const MetaValue* find_meta(std::string_view key) const;
 };
 
 // mmaps path and parses the GGUF header, metadata, and tensor table. Tensor
@@ -125,6 +125,6 @@ struct GgufFile {
 // mapping, so file and GgufFile must outlive any use of tensor data.
 std::expected<GgufFile, Error> load(std::string_view path);
 
-} // namespace dbinfer::gguf
+}  // namespace dbinfer::gguf
 
 #endif

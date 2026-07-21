@@ -14,13 +14,13 @@ constexpr std::uint64_t kP5 = 0x27D4EB2F165667C5ULL;
 
 std::uint64_t rotl(std::uint64_t x, int r) { return (x << r) | (x >> (64 - r)); }
 
-std::uint64_t read64(const std::byte *p) {
+std::uint64_t read64(const std::byte* p) {
   std::uint64_t v;
   std::memcpy(&v, p, sizeof v);
   return v;
 }
 
-std::uint32_t read32(const std::byte *p) {
+std::uint32_t read32(const std::byte* p) {
   std::uint32_t v;
   std::memcpy(&v, p, sizeof v);
   return v;
@@ -40,14 +40,14 @@ std::uint64_t merge_round(std::uint64_t acc, std::uint64_t val) {
   return acc;
 }
 
-} // namespace
+}  // namespace
 
-std::uint64_t xxhash64(const std::byte *p, std::size_t len, std::uint64_t seed) {
-  const std::byte *const end = p + len;
+std::uint64_t xxhash64(const std::byte* p, std::size_t len, std::uint64_t seed) {
+  const std::byte* const end = p + len;
   std::uint64_t h;
 
   if (len >= 32) {
-    const std::byte *const limit = end - 32;
+    const std::byte* const limit = end - 32;
     std::uint64_t v1 = seed + kP1 + kP2;
     std::uint64_t v2 = seed + kP2;
     std::uint64_t v3 = seed;
@@ -97,4 +97,4 @@ std::uint64_t xxhash64(const std::byte *p, std::size_t len, std::uint64_t seed) 
   return h;
 }
 
-} // namespace dbinfer::dbmf
+}  // namespace dbinfer::dbmf

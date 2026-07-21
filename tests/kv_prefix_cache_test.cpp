@@ -2,10 +2,6 @@
 // prefix must be bitwise identical between a fresh prefill and a run that
 // reloads the serialized prefix.
 
-#include "model/model.hpp"
-
-#include "gguf/gguf.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +11,9 @@
 #include <string>
 #include <vector>
 
+#include "gguf/gguf.hpp"
+#include "model/model.hpp"
+
 #ifndef DBINFER_TEST_GGUF
 #error "DBINFER_TEST_GGUF must be defined by the build"
 #endif
@@ -22,14 +21,13 @@
 namespace {
 
 std::string cache_path() {
-  const char *tmp = std::getenv("TMPDIR");
+  const char* tmp = std::getenv("TMPDIR");
   std::string dir = tmp != nullptr ? tmp : "/tmp";
-  if (!dir.empty() && dir.back() != '/')
-    dir.push_back('/');
+  if (!dir.empty() && dir.back() != '/') dir.push_back('/');
   return dir + "dbinfer_kv_prefix_test.bin";
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   auto loaded = dbinfer::gguf::load(DBINFER_TEST_GGUF);
@@ -60,7 +58,7 @@ int main() {
     std::printf("FAIL save_kv_prefix: %s\n", dbinfer::gguf::to_string(ok.error()).c_str());
     return 1;
   }
-  const float *lf = model_a->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
+  const float* lf = model_a->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
   std::vector<float> logits_fresh(lf, lf + vocab);
 
   // cached: reload the prefix into a fresh model, score the same token.
@@ -78,7 +76,7 @@ int main() {
     std::printf("FAIL restored prefix_len %zu != %zu\n", *restored, prefix_len);
     return 1;
   }
-  const float *lc = model_b->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
+  const float* lc = model_b->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
   std::vector<float> logits_cached(lc, lc + vocab);
 
   std::remove(path.c_str());
@@ -86,8 +84,7 @@ int main() {
   if (std::memcmp(logits_fresh.data(), logits_cached.data(), vocab * sizeof(float)) != 0) {
     std::size_t first = 0;
     for (; first < vocab; ++first)
-      if (logits_fresh[first] != logits_cached[first])
-        break;
+      if (logits_fresh[first] != logits_cached[first]) break;
     std::printf("FAIL logits differ: first mismatch at %zu (fresh %.9g cached %.9g)\n", first,
                 static_cast<double>(logits_fresh[first]),
                 static_cast<double>(logits_cached[first]));

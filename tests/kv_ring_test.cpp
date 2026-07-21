@@ -1,13 +1,13 @@
 // unit tests for the StreamingLLM ring-buffer KV cache: slot mapping,
 // resident-set membership, and cache-relative RoPE positions.
 
-#include "model/model.hpp"
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+
+#include "model/model.hpp"
 
 namespace {
 
@@ -16,7 +16,7 @@ using dbinfer::model::KvPolicy;
 
 int g_failures = 0;
 
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   if (ok) {
     std::printf("PASS %s\n", what);
   } else {
@@ -26,8 +26,7 @@ void check(bool ok, const char *what) {
 }
 
 std::size_t expected_slot(std::size_t pos, std::size_t n_sink, std::size_t window) {
-  if (pos < n_sink)
-    return pos;
+  if (pos < n_sink) return pos;
   return n_sink + (pos - n_sink) % window;
 }
 
@@ -49,8 +48,7 @@ void run_case(std::size_t n_sink, std::size_t window, std::size_t n_seen) {
 
   const std::size_t sinks = std::min(n_seen, n_sink);
   std::size_t window_start = n_sink;
-  if (n_seen > n_sink && n_seen - n_sink > window)
-    window_start = n_seen - window;
+  if (n_seen > n_sink && n_seen - n_sink > window) window_start = n_seen - window;
   const std::size_t wlen = n_seen > n_sink ? n_seen - window_start : 0;
 
   std::snprintf(name, sizeof name, "n_res == sinks+window (sink=%zu win=%zu seen=%zu)", n_sink,
@@ -95,17 +93,17 @@ void run_case(std::size_t n_sink, std::size_t window, std::size_t n_seen) {
   check(distinct, name);
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   run_case(/*n_sink=*/4, /*window=*/8, /*n_seen=*/40);
-  run_case(4, 8, 12); // exactly n_sink+window
-  run_case(4, 8, 11); // window not yet full
-  run_case(0, 8, 40); // no sinks, naive window
+  run_case(4, 8, 12);  // exactly n_sink+window
+  run_case(4, 8, 11);  // window not yet full
+  run_case(0, 8, 40);  // no sinks, naive window
   run_case(1, 4, 40);
-  run_case(4, 8, 4);   // only sinks resident
-  run_case(4, 8, 2);   // fewer than n_sink tokens
-  run_case(4, 8, 100); // many wraps
+  run_case(4, 8, 4);    // only sinks resident
+  run_case(4, 8, 2);    // fewer than n_sink tokens
+  run_case(4, 8, 100);  // many wraps
   std::printf("---\n%d checks failed\n", g_failures);
   return g_failures == 0 ? 0 : 1;
 }

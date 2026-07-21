@@ -1,7 +1,3 @@
-#include "tensor/cpu.hpp"
-#include "tensor/dequant.hpp"
-#include "tensor/matmul_neon.hpp"
-
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +5,10 @@
 #include <cstring>
 #include <random>
 #include <vector>
+
+#include "tensor/cpu.hpp"
+#include "tensor/dequant.hpp"
+#include "tensor/matmul_neon.hpp"
 
 // property test: the sdot kernels reproduce the scalar reference within atol
 // 1e-6 over random blocks plus zero, saturated, and denormal edge cases. runs
@@ -23,14 +23,13 @@ using dbinfer::tensor::kBlockSize;
 int g_failures = 0;
 constexpr float kAtol = 1e-6f;
 
-float max_diff(const std::vector<float> &a, const std::vector<float> &b) {
+float max_diff(const std::vector<float>& a, const std::vector<float>& b) {
   float m = 0.0f;
-  for (std::size_t i = 0; i < a.size(); ++i)
-    m = std::max(m, std::fabs(a[i] - b[i]));
+  for (std::size_t i = 0; i < a.size(); ++i) m = std::max(m, std::fabs(a[i] - b[i]));
   return m;
 }
 
-void check_q8(const char *what, const std::vector<std::byte> &w, const std::vector<BlockQ8_0> &xq,
+void check_q8(const char* what, const std::vector<std::byte>& w, const std::vector<BlockQ8_0>& xq,
               std::size_t out, std::size_t in) {
   std::vector<float> ref(out);
   std::vector<float> got(out);
@@ -43,7 +42,7 @@ void check_q8(const char *what, const std::vector<std::byte> &w, const std::vect
   }
 }
 
-void check_q4(const char *what, const std::vector<std::byte> &w, const std::vector<BlockQ8_0> &xq,
+void check_q4(const char* what, const std::vector<std::byte>& w, const std::vector<BlockQ8_0>& xq,
               std::size_t out, std::size_t in) {
   std::vector<float> ref(out);
   std::vector<float> got(out);
@@ -58,10 +57,9 @@ void check_q4(const char *what, const std::vector<std::byte> &w, const std::vect
 
 bool g_i8mm = false;
 
-void check_q8_i8mm(const char *what, const std::vector<std::byte> &w,
-                   const std::vector<BlockQ8_0> &xq, std::size_t out, std::size_t in) {
-  if (!g_i8mm)
-    return;
+void check_q8_i8mm(const char* what, const std::vector<std::byte>& w,
+                   const std::vector<BlockQ8_0>& xq, std::size_t out, std::size_t in) {
+  if (!g_i8mm) return;
   std::vector<float> ref(out);
   std::vector<float> got(out);
   dbinfer::tensor::matvec_q8_0_scalar(w.data(), xq.data(), ref.data(), out, in);
@@ -73,10 +71,9 @@ void check_q8_i8mm(const char *what, const std::vector<std::byte> &w,
   }
 }
 
-void check_q4_i8mm(const char *what, const std::vector<std::byte> &w,
-                   const std::vector<BlockQ8_0> &xq, std::size_t out, std::size_t in) {
-  if (!g_i8mm)
-    return;
+void check_q4_i8mm(const char* what, const std::vector<std::byte>& w,
+                   const std::vector<BlockQ8_0>& xq, std::size_t out, std::size_t in) {
+  if (!g_i8mm) return;
   std::vector<float> ref(out);
   std::vector<float> got(out);
   dbinfer::tensor::matvec_q4_0_scalar(w.data(), xq.data(), ref.data(), out, in);
@@ -88,7 +85,7 @@ void check_q4_i8mm(const char *what, const std::vector<std::byte> &w,
   }
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   if (!dbinfer::tensor::cpu_features().dotprod) {
@@ -114,18 +111,16 @@ int main() {
     const std::size_t in = nblocks * kBlockSize;
 
     std::vector<BlockQ8_0> xq(nblocks);
-    for (auto &blk : xq) {
+    for (auto& blk : xq) {
       blk.d = f32_to_f16(scale(rng));
-      for (std::size_t i = 0; i < kBlockSize; ++i)
-        blk.qs[i] = static_cast<std::int8_t>(q8(rng));
+      for (std::size_t i = 0; i < kBlockSize; ++i) blk.qs[i] = static_cast<std::int8_t>(q8(rng));
     }
 
     {
       std::vector<BlockQ8_0> w(out * nblocks);
-      for (auto &blk : w) {
+      for (auto& blk : w) {
         blk.d = f32_to_f16(scale(rng));
-        for (std::size_t i = 0; i < kBlockSize; ++i)
-          blk.qs[i] = static_cast<std::int8_t>(q8(rng));
+        for (std::size_t i = 0; i < kBlockSize; ++i) blk.qs[i] = static_cast<std::int8_t>(q8(rng));
       }
       std::vector<std::byte> wb(out * nblocks * sizeof(BlockQ8_0));
       std::memcpy(wb.data(), w.data(), wb.size());
@@ -137,11 +132,10 @@ int main() {
     {
       std::vector<std::byte> wb(out * nblocks * sizeof(dbinfer::tensor::BlockQ4_0));
       for (std::size_t k = 0; k < out * nblocks; ++k) {
-        std::byte *blk = wb.data() + k * sizeof(dbinfer::tensor::BlockQ4_0);
+        std::byte* blk = wb.data() + k * sizeof(dbinfer::tensor::BlockQ4_0);
         const std::uint16_t d = f32_to_f16(scale(rng));
         std::memcpy(blk, &d, sizeof(d));
-        for (std::size_t j = 0; j < 16; ++j)
-          blk[2 + j] = static_cast<std::byte>(byte(rng));
+        for (std::size_t j = 0; j < 16; ++j) blk[2 + j] = static_cast<std::byte>(byte(rng));
       }
       check_q4("q4 random", wb, xq, out, in);
       check_q4_i8mm("q4 random i8mm", wb, xq, out, in);
@@ -156,8 +150,7 @@ int main() {
     std::memset(xq[0].qs, 0, sizeof(xq[0].qs));
     std::vector<BlockQ8_0> w(1);
     w[0].d = f32_to_f16(0.25f);
-    for (std::size_t i = 0; i < kBlockSize; ++i)
-      w[0].qs[i] = static_cast<std::int8_t>(q8(rng));
+    for (std::size_t i = 0; i < kBlockSize; ++i) w[0].qs[i] = static_cast<std::int8_t>(q8(rng));
     std::vector<std::byte> wb(sizeof(BlockQ8_0));
     std::memcpy(wb.data(), w.data(), wb.size());
     check_q8("q8 zero activation", wb, xq, 1, kBlockSize);
@@ -166,8 +159,7 @@ int main() {
     std::vector<std::byte> w4(sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = f32_to_f16(0.25f);
     std::memcpy(w4.data(), &d, sizeof(d));
-    for (std::size_t j = 0; j < 16; ++j)
-      w4[2 + j] = static_cast<std::byte>(byte(rng));
+    for (std::size_t j = 0; j < 16; ++j) w4[2 + j] = static_cast<std::byte>(byte(rng));
     check_q4("q4 zero activation", w4, xq, 1, kBlockSize);
     check_q4_i8mm("q4 zero activation i8mm", w4, xq, 1, kBlockSize);
   }
@@ -191,10 +183,10 @@ int main() {
     std::vector<std::byte> w4(2 * sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = f32_to_f16(0.5f);
     for (std::size_t r = 0; r < 2; ++r) {
-      std::byte *blk = w4.data() + r * sizeof(dbinfer::tensor::BlockQ4_0);
+      std::byte* blk = w4.data() + r * sizeof(dbinfer::tensor::BlockQ4_0);
       std::memcpy(blk, &d, sizeof(d));
       for (std::size_t j = 0; j < 16; ++j)
-        blk[2 + j] = static_cast<std::byte>(0x0F); // both nibbles level 15
+        blk[2 + j] = static_cast<std::byte>(0x0F);  // both nibbles level 15
     }
     check_q4("q4 saturated", w4, xq, 2, kBlockSize);
     check_q4_i8mm("q4 saturated i8mm", w4, xq, 2, kBlockSize);
@@ -202,13 +194,11 @@ int main() {
 
   {
     std::vector<BlockQ8_0> xq(1);
-    xq[0].d = 0x0001; // fp16 denormal 2^-24
-    for (std::size_t i = 0; i < kBlockSize; ++i)
-      xq[0].qs[i] = static_cast<std::int8_t>(q8(rng));
+    xq[0].d = 0x0001;  // fp16 denormal 2^-24
+    for (std::size_t i = 0; i < kBlockSize; ++i) xq[0].qs[i] = static_cast<std::int8_t>(q8(rng));
     std::vector<BlockQ8_0> w(1);
-    w[0].d = 0x0002; // fp16 denormal 2^-23
-    for (std::size_t i = 0; i < kBlockSize; ++i)
-      w[0].qs[i] = static_cast<std::int8_t>(q8(rng));
+    w[0].d = 0x0002;  // fp16 denormal 2^-23
+    for (std::size_t i = 0; i < kBlockSize; ++i) w[0].qs[i] = static_cast<std::int8_t>(q8(rng));
     std::vector<std::byte> wb(sizeof(BlockQ8_0));
     std::memcpy(wb.data(), w.data(), wb.size());
     check_q8("q8 denormal scale", wb, xq, 1, kBlockSize);
@@ -217,8 +207,7 @@ int main() {
     std::vector<std::byte> w4(sizeof(dbinfer::tensor::BlockQ4_0));
     const std::uint16_t d = 0x0002;
     std::memcpy(w4.data(), &d, sizeof(d));
-    for (std::size_t j = 0; j < 16; ++j)
-      w4[2 + j] = static_cast<std::byte>(byte(rng));
+    for (std::size_t j = 0; j < 16; ++j) w4[2 + j] = static_cast<std::byte>(byte(rng));
     check_q4("q4 denormal scale", w4, xq, 1, kBlockSize);
     check_q4_i8mm("q4 denormal scale i8mm", w4, xq, 1, kBlockSize);
   }

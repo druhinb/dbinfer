@@ -1,14 +1,14 @@
 // ctest for the byte-level BPE tokenizer
 
-#include "tokenizer/fixture_generated.hpp"
 #include "tokenizer/tokenizer.hpp"
-
-#include "gguf/gguf.hpp"
 
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#include "gguf/gguf.hpp"
+#include "tokenizer/fixture_generated.hpp"
 
 #ifndef DBINFER_TEST_GGUF
 #error "DBINFER_TEST_GGUF must be defined by the build (path to the qwen2.5-0.5b gguf)"
@@ -20,12 +20,11 @@ int g_failures = 0;
 
 std::string as_bytes(std::initializer_list<std::uint8_t> in) {
   std::string s;
-  for (std::uint8_t b : in)
-    s.push_back(static_cast<char>(b));
+  for (std::uint8_t b : in) s.push_back(static_cast<char>(b));
   return s;
 }
 
-bool is_valid_utf8(const std::string &s) {
+bool is_valid_utf8(const std::string& s) {
   std::size_t i = 0, n = s.size();
   auto cont = [&](std::size_t k) {
     return k < n && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80;
@@ -35,16 +34,13 @@ bool is_valid_utf8(const std::string &s) {
     if (!(c & 0x80)) {
       i += 1;
     } else if ((c & 0xE0) == 0xC0) {
-      if (!cont(i + 1))
-        return false;
+      if (!cont(i + 1)) return false;
       i += 2;
     } else if ((c & 0xF0) == 0xE0) {
-      if (!cont(i + 1) || !cont(i + 2))
-        return false;
+      if (!cont(i + 1) || !cont(i + 2)) return false;
       i += 3;
     } else if ((c & 0xF8) == 0xF0) {
-      if (!cont(i + 1) || !cont(i + 2) || !cont(i + 3))
-        return false;
+      if (!cont(i + 1) || !cont(i + 2) || !cont(i + 3)) return false;
       i += 4;
     } else {
       return false;
@@ -53,7 +49,7 @@ bool is_valid_utf8(const std::string &s) {
   return true;
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   auto loaded = dbinfer::gguf::load(DBINFER_TEST_GGUF);
@@ -72,7 +68,7 @@ int main() {
 
   int parity_fail = 0, roundtrip_fail = 0;
   for (std::size_t i = 0; i < n; ++i) {
-    const auto &c = dbinfer::tokenizer_fixture::kCases[i];
+    const auto& c = dbinfer::tokenizer_fixture::kCases[i];
     std::string input = as_bytes(c.input);
 
     std::vector<std::int32_t> got = tok->encode(input, /*add_special=*/false);
@@ -81,11 +77,9 @@ int main() {
       std::printf("FAIL parity case %zu (%zu bytes): got %zu ids, want %zu\n", i, input.size(),
                   got.size(), want.size());
       std::printf("     got: ");
-      for (auto x : got)
-        std::printf("%d ", x);
+      for (auto x : got) std::printf("%d ", x);
       std::printf("\n     want:");
-      for (auto x : want)
-        std::printf("%d ", x);
+      for (auto x : want) std::printf("%d ", x);
       std::printf("\n");
       ++parity_fail;
     }
@@ -107,7 +101,7 @@ int main() {
   // encoder's own view of x for every case, valid or not.
   int enc_roundtrip_fail = 0;
   for (std::size_t i = 0; i < n; ++i) {
-    const auto &c = dbinfer::tokenizer_fixture::kCases[i];
+    const auto& c = dbinfer::tokenizer_fixture::kCases[i];
     std::string input = as_bytes(c.input);
     std::string dec = tok->decode(tok->encode(input, false));
     if (is_valid_utf8(input) && dec != input) {

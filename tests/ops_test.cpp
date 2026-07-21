@@ -18,9 +18,9 @@ namespace {
 
 int g_failures = 0;
 
-std::vector<float> load_bin(const char *name, std::size_t expect_n) {
+std::vector<float> load_bin(const char* name, std::size_t expect_n) {
   std::string path = std::string(DBINFER_GOLDEN_DIR) + "/" + name;
-  std::FILE *f = std::fopen(path.c_str(), "rb");
+  std::FILE* f = std::fopen(path.c_str(), "rb");
   if (f == nullptr) {
     std::printf("FAIL cannot open %s\n", path.c_str());
     ++g_failures;
@@ -37,14 +37,14 @@ std::vector<float> load_bin(const char *name, std::size_t expect_n) {
   return v;
 }
 
-double max_abs_err(const std::vector<float> &a, const std::vector<float> &b) {
+double max_abs_err(const std::vector<float>& a, const std::vector<float>& b) {
   double m = 0.0;
   for (std::size_t i = 0; i < a.size(); ++i)
     m = std::max(m, std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i])));
   return m;
 }
 
-void check(bool ok, const char *what, double err) {
+void check(bool ok, const char* what, double err) {
   if (ok) {
     std::printf("PASS %-28s max_err=%.3e\n", what, err);
   } else {
@@ -58,21 +58,19 @@ void test_rmsnorm() {
   auto in = load_bin("rmsnorm_in.bin", rows * dim);
   auto weight = load_bin("rmsnorm_weight.bin", dim);
   auto ref = load_bin("rmsnorm_out.bin", rows * dim);
-  if (in.empty() || weight.empty() || ref.empty())
-    return;
+  if (in.empty() || weight.empty() || ref.empty()) return;
   std::vector<float> out(rows * dim);
   dbinfer::tensor::rmsnorm(in.data(), weight.data(), 1e-6f, out.data(), rows, dim);
   double err = max_abs_err(out, ref);
   check(err <= 1e-5, "rmsnorm vs rmsnorm_out", err);
 }
 
-void test_rope(const char *in_name, const char *out_name, std::size_t n_heads) {
+void test_rope(const char* in_name, const char* out_name, std::size_t n_heads) {
   const std::size_t seq = 6, head_dim = 64;
   const std::size_t n = n_heads * seq * head_dim;
   auto x = load_bin(in_name, n);
   auto ref = load_bin(out_name, n);
-  if (x.empty() || ref.empty())
-    return;
+  if (x.empty() || ref.empty()) return;
   const std::int32_t positions[6] = {0, 1, 2, 3, 4, 5};
   dbinfer::tensor::rope(x.data(), positions, 1e6f, n_heads, seq, head_dim);
   double err = max_abs_err(x, ref);
@@ -83,8 +81,7 @@ void test_softmax() {
   const std::size_t rows = 8, cols = 512;
   auto in = load_bin("softmax_in.bin", rows * cols);
   auto ref = load_bin("softmax_out.bin", rows * cols);
-  if (in.empty() || ref.empty())
-    return;
+  if (in.empty() || ref.empty()) return;
   std::vector<float> out(rows * cols);
   for (std::size_t r = 0; r < rows; ++r)
     dbinfer::tensor::softmax(in.data() + r * cols, out.data() + r * cols, cols);
@@ -96,15 +93,14 @@ void test_silu() {
   const std::size_t n = 4096;
   auto in = load_bin("silu_in.bin", n);
   auto ref = load_bin("silu_out.bin", n);
-  if (in.empty() || ref.empty())
-    return;
+  if (in.empty() || ref.empty()) return;
   std::vector<float> out(n);
   dbinfer::tensor::silu(in.data(), out.data(), n);
   double err = max_abs_err(out, ref);
   check(err <= 1e-5, "silu vs silu_out", err);
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   test_rmsnorm();

@@ -5,15 +5,15 @@
 // the double CPU transcendentals within tolerance. atol is 1e-4 throughout.
 // skips cleanly when no Metal device is present.
 
-#include "backend/metal_backend.hpp"
-#include "tensor/ops.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+
+#include "backend/metal_backend.hpp"
+#include "tensor/ops.hpp"
 
 namespace {
 
@@ -28,13 +28,12 @@ struct Lcg {
   }
 };
 
-void check(bool ok, const char *what) {
+void check(bool ok, const char* what) {
   std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok)
-    ++g_failures;
+  if (!ok) ++g_failures;
 }
 
-double max_abs_diff(const std::vector<float> &a, const std::vector<float> &b) {
+double max_abs_diff(const std::vector<float>& a, const std::vector<float>& b) {
   double m = 0.0;
   for (std::size_t i = 0; i < a.size(); ++i) {
     const double d = static_cast<double>(a[i]) - static_cast<double>(b[i]);
@@ -44,7 +43,7 @@ double max_abs_diff(const std::vector<float> &a, const std::vector<float> &b) {
 }
 
 // dense fp32 single-query attention, mirroring Model::decode_layer exactly.
-void cpu_attention(const float *q, const float *k, const float *v, float *out,
+void cpu_attention(const float* q, const float* k, const float* v, float* out,
                    std::size_t n_positions, std::size_t nh, std::size_t nkv, std::size_t hd) {
   const std::size_t gqa = nh / nkv;
   const std::size_t stride = nkv * hd;
@@ -52,34 +51,29 @@ void cpu_attention(const float *q, const float *k, const float *v, float *out,
   std::vector<float> sc(n_positions, 0.0f);
   for (std::size_t h = 0; h < nh; ++h) {
     const std::size_t kh = h / gqa;
-    const float *qh = q + h * hd;
+    const float* qh = q + h * hd;
     for (std::size_t pp = 0; pp < n_positions; ++pp) {
-      const float *kp = k + pp * stride + kh * hd;
+      const float* kp = k + pp * stride + kh * hd;
       float dot = 0.0f;
-      for (std::size_t i = 0; i < hd; ++i)
-        dot += qh[i] * kp[i];
+      for (std::size_t i = 0; i < hd; ++i) dot += qh[i] * kp[i];
       sc[pp] = dot * scale;
     }
     dbinfer::tensor::softmax(sc.data(), sc.data(), n_positions);
-    float *outh = out + h * hd;
-    for (std::size_t i = 0; i < hd; ++i)
-      outh[i] = 0.0f;
+    float* outh = out + h * hd;
+    for (std::size_t i = 0; i < hd; ++i) outh[i] = 0.0f;
     for (std::size_t pp = 0; pp < n_positions; ++pp) {
-      const float *vp = v + pp * stride + kh * hd;
+      const float* vp = v + pp * stride + kh * hd;
       const float w = sc[pp];
-      for (std::size_t i = 0; i < hd; ++i)
-        outh[i] += w * vp[i];
+      for (std::size_t i = 0; i < hd; ++i) outh[i] += w * vp[i];
     }
   }
 }
 
-double test_rmsnorm(dbinfer::backend::Backend &m, std::size_t rows, std::size_t dim) {
+double test_rmsnorm(dbinfer::backend::Backend& m, std::size_t rows, std::size_t dim) {
   Lcg rng{0x5151 ^ (rows * 131 + dim * 17)};
   std::vector<float> x(rows * dim), w(dim), cpu(rows * dim, 0.0f), gpu(rows * dim, 0.0f);
-  for (auto &e : x)
-    e = rng.next();
-  for (auto &e : w)
-    e = rng.next();
+  for (auto& e : x) e = rng.next();
+  for (auto& e : w) e = rng.next();
   const float eps = 1e-6f;
   dbinfer::tensor::rmsnorm(x.data(), w.data(), eps, cpu.data(), rows, dim);
   auto r = m.rmsnorm(x.data(), w.data(), eps, gpu.data(), rows, dim);
@@ -93,12 +87,11 @@ double test_rmsnorm(dbinfer::backend::Backend &m, std::size_t rows, std::size_t 
   return err;
 }
 
-double test_rope(dbinfer::backend::Backend &m, std::size_t nh, std::size_t seq, std::size_t hd,
-                 const std::vector<std::int32_t> &pos) {
+double test_rope(dbinfer::backend::Backend& m, std::size_t nh, std::size_t seq, std::size_t hd,
+                 const std::vector<std::int32_t>& pos) {
   Lcg rng{0x2323 ^ (nh * 131 + seq * 17 + hd)};
   std::vector<float> x(nh * seq * hd), cpu, gpu;
-  for (auto &e : x)
-    e = rng.next();
+  for (auto& e : x) e = rng.next();
   cpu = x;
   gpu = x;
   const float theta = 1000000.0f;
@@ -115,18 +108,15 @@ double test_rope(dbinfer::backend::Backend &m, std::size_t nh, std::size_t seq, 
   return err;
 }
 
-double test_attention(dbinfer::backend::Backend &m, std::size_t nh, std::size_t nkv, std::size_t hd,
+double test_attention(dbinfer::backend::Backend& m, std::size_t nh, std::size_t nkv, std::size_t hd,
                       std::size_t n_pos) {
   Lcg rng{0x9797 ^ (nh * 131 + nkv * 17 + hd * 7 + n_pos)};
   const std::size_t stride = nkv * hd;
   std::vector<float> q(nh * hd), k(n_pos * stride), v(n_pos * stride);
   std::vector<float> cpu(nh * hd, 0.0f), gpu(nh * hd, 0.0f);
-  for (auto &e : q)
-    e = rng.next();
-  for (auto &e : k)
-    e = rng.next();
-  for (auto &e : v)
-    e = rng.next();
+  for (auto& e : q) e = rng.next();
+  for (auto& e : k) e = rng.next();
+  for (auto& e : v) e = rng.next();
   cpu_attention(q.data(), k.data(), v.data(), cpu.data(), n_pos, nh, nkv, hd);
   auto r = m.attention(q.data(), k.data(), v.data(), gpu.data(), n_pos, nh, nkv, hd);
   if (!r) {
@@ -140,10 +130,10 @@ double test_attention(dbinfer::backend::Backend &m, std::size_t nh, std::size_t 
   return err;
 }
 
-} // namespace
+}  // namespace
 
 int main() {
-  dbinfer::backend::Backend *m = dbinfer::backend::metal_backend();
+  dbinfer::backend::Backend* m = dbinfer::backend::metal_backend();
   if (m == nullptr) {
     std::printf("SKIP no Metal device available\n");
     return 0;

@@ -4,14 +4,6 @@
 #ifdef DBINFER_METAL
 #include "backend/metal_backend.hpp"
 #endif
-#include "gguf/gguf.hpp"
-#include "grammar/grammar.hpp"
-#include "model/model.hpp"
-#include "model/speculative.hpp"
-#include "sample/sample.hpp"
-#include "tensor/thread_pool.hpp"
-#include "tokenizer/tokenizer.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -23,35 +15,40 @@
 #include <string>
 #include <vector>
 
+#include "gguf/gguf.hpp"
+#include "grammar/grammar.hpp"
+#include "model/model.hpp"
+#include "model/speculative.hpp"
+#include "sample/sample.hpp"
+#include "tensor/thread_pool.hpp"
+#include "tokenizer/tokenizer.hpp"
+
 namespace {
 
 // DBMF_VERIFY=1 recomputes every tensor's xxhash64 at load. off by default so
 // the mmap-direct path stays fast.
 dbinfer::dbmf::ReadOptions read_opts() {
-  const char *v = std::getenv("DBMF_VERIFY");
+  const char* v = std::getenv("DBMF_VERIFY");
   return {v != nullptr && v[0] == '1'};
 }
 
-std::optional<std::string> read_file(const char *path) {
-  std::FILE *f = std::fopen(path, "rb");
-  if (f == nullptr)
-    return std::nullopt;
+std::optional<std::string> read_file(const char* path) {
+  std::FILE* f = std::fopen(path, "rb");
+  if (f == nullptr) return std::nullopt;
   std::string data;
   char buf[65536];
   std::size_t got = 0;
-  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0)
-    data.append(buf, got);
+  while ((got = std::fread(buf, 1, sizeof buf, f)) > 0) data.append(buf, got);
   const bool ok = std::ferror(f) == 0;
   std::fclose(f);
-  if (!ok)
-    return std::nullopt;
+  if (!ok) return std::nullopt;
   return data;
 }
 
 // classic llama.cpp perplexity: non-overlapping 512-token windows, scoring
 // only the second half so every scored token has 256+ tokens of left context.
-int run_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Tokenizer &tok,
-                   const dbinfer::cli::CliOptions &opts) {
+int run_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Tokenizer& tok,
+                   const dbinfer::cli::CliOptions& opts) {
   auto text = read_file(opts.perplexity_path.c_str());
   if (!text) {
     std::fprintf(stderr, "error: cannot read %s\n", opts.perplexity_path.c_str());
@@ -60,11 +57,10 @@ int run_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Token
 
   std::vector<std::int32_t> tokens = tok.encode(*text, /*add_special=*/false);
   const std::int32_t bos = tok.bos_id();
-  if (bos >= 0)
-    tokens.insert(tokens.begin(), bos);
+  if (bos >= 0) tokens.insert(tokens.begin(), bos);
 
   constexpr std::size_t n_ctx = 512;
-  constexpr std::size_t score_lo = n_ctx / 2; // 256
+  constexpr std::size_t score_lo = n_ctx / 2;  // 256
   const std::size_t vocab = model.config().vocab_size;
 
   if (tokens.size() < n_ctx) {
@@ -81,12 +77,10 @@ int run_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Token
   for (std::size_t w = 0; w < n_chunk; ++w) {
     const std::size_t start = w * n_ctx;
     for (std::size_t j = 0; j < n_ctx; ++j) {
-      const float *logits = model.forward(tokens[start + j], static_cast<std::int32_t>(j));
-      if (j < score_lo || j + 1 >= n_ctx)
-        continue;
+      const float* logits = model.forward(tokens[start + j], static_cast<std::int32_t>(j));
+      if (j < score_lo || j + 1 >= n_ctx) continue;
       float max_logit = logits[0];
-      for (std::size_t i = 1; i < vocab; ++i)
-        max_logit = std::max(max_logit, logits[i]);
+      for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
       double sum_exp = 0.0;
       for (std::size_t i = 0; i < vocab; ++i)
         sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
@@ -107,8 +101,8 @@ int run_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Token
 // streaming perplexity: one continuous context with monotonically increasing
 // position, no window resets. per-token NLL bucketed by position exposes
 // whether a ring cache stays flat or diverges as position passes the window.
-int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer::Tokenizer &tok,
-                          const dbinfer::cli::CliOptions &opts) {
+int run_stream_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Tokenizer& tok,
+                          const dbinfer::cli::CliOptions& opts) {
   auto text = read_file(opts.perplexity_path.c_str());
   if (!text) {
     std::fprintf(stderr, "error: cannot read %s\n", opts.perplexity_path.c_str());
@@ -117,8 +111,7 @@ int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer
 
   std::vector<std::int32_t> tokens = tok.encode(*text, /*add_special=*/false);
   const std::int32_t bos = tok.bos_id();
-  if (bos >= 0)
-    tokens.insert(tokens.begin(), bos);
+  if (bos >= 0) tokens.insert(tokens.begin(), bos);
   if (tokens.size() < 2) {
     std::fprintf(stderr, "error: need at least 2 tokens, got %zu\n", tokens.size());
     return 1;
@@ -136,10 +129,9 @@ int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer
   double nll = 0.0;
   std::size_t count = 0;
   for (std::size_t j = 0; j + 1 < limit; ++j) {
-    const float *logits = model.forward(tokens[j], static_cast<std::int32_t>(j));
+    const float* logits = model.forward(tokens[j], static_cast<std::int32_t>(j));
     float max_logit = logits[0];
-    for (std::size_t i = 1; i < vocab; ++i)
-      max_logit = std::max(max_logit, logits[i]);
+    for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
     double sum_exp = 0.0;
     for (std::size_t i = 0; i < vocab; ++i)
       sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
@@ -170,8 +162,8 @@ int run_stream_perplexity(dbinfer::model::Model &model, const dbinfer::tokenizer
 // them in one batched forward. greedy, so the output is token-identical to
 // target-only decode. loads the draft, checks vocab and cache compatibility,
 // prints the generated tokens, and logs the acceptance rate to stderr.
-int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tokenizer &tok,
-                    const dbinfer::cli::CliOptions &opts) {
+int run_speculative(dbinfer::model::Model& target, const dbinfer::tokenizer::Tokenizer& tok,
+                    const dbinfer::cli::CliOptions& opts) {
   auto dloaded = dbinfer::dbmf::load_model(opts.draft_model, read_opts());
   if (!dloaded) {
     std::fprintf(stderr, "error: load draft model: %s\n",
@@ -184,7 +176,7 @@ int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tok
                  dbinfer::gguf::to_string(dret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model &draft = *dret;
+  dbinfer::model::Model& draft = *dret;
 
   if (draft.config().vocab_size != target.config().vocab_size) {
     std::fprintf(stderr, "error: draft/target vocab mismatch (%zu vs %zu)\n",
@@ -217,8 +209,7 @@ int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tok
       std::fflush(stdout);
     }
   }
-  if (!opts.print_ids)
-    std::fputc('\n', stdout);
+  if (!opts.print_ids) std::fputc('\n', stdout);
 
   const double rate =
       stats.proposed > 0 ? static_cast<double>(stats.accepted) / static_cast<double>(stats.proposed)
@@ -228,16 +219,16 @@ int run_speculative(dbinfer::model::Model &target, const dbinfer::tokenizer::Tok
   return 0;
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   auto parsed = dbinfer::cli::parse_args(argc, argv);
   if (!parsed) {
     std::fprintf(stderr, "error: %s\n", parsed.error().message.c_str());
     std::fputs(dbinfer::cli::usage(argv[0]).c_str(), stderr);
     return 2;
   }
-  const dbinfer::cli::CliOptions &opts = *parsed;
+  const dbinfer::cli::CliOptions& opts = *parsed;
 
   auto loaded = dbinfer::dbmf::load_model(opts.model_path, read_opts());
   if (!loaded) {
@@ -255,8 +246,8 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "error: tokenizer: %s\n", dbinfer::gguf::to_string(tret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model &model = *mret;
-  const dbinfer::tokenizer::Tokenizer &tok = *tret;
+  dbinfer::model::Model& model = *mret;
+  const dbinfer::tokenizer::Tokenizer& tok = *tret;
 
   if (opts.threads > 0)
     dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
@@ -268,11 +259,11 @@ int main(int argc, char **argv) {
 
   int gpu_layers = opts.gpu_layers;
   if (gpu_layers < 0) {
-    const char *env = std::getenv("DBINFER_GPU_LAYERS");
+    const char* env = std::getenv("DBINFER_GPU_LAYERS");
     gpu_layers = env != nullptr ? std::atoi(env) : 0;
   }
   if (gpu_layers > 0) {
-    dbinfer::backend::Backend *be = nullptr;
+    dbinfer::backend::Backend* be = nullptr;
 #ifdef DBINFER_METAL
     be = dbinfer::backend::metal_backend();
 #endif
@@ -290,16 +281,14 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "error: --gpu-layers requires F16, Q8_0, or Q4_0 weights\n");
       return 1;
     }
-    if (!model.set_gpu_offload(be, n))
-      return 1;
+    if (!model.set_gpu_offload(be, n)) return 1;
   }
 
   if (!opts.perplexity_path.empty())
     return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
                            : run_perplexity(model, tok, opts);
 
-  if (!opts.draft_model.empty())
-    return run_speculative(model, tok, opts);
+  if (!opts.draft_model.empty()) return run_speculative(model, tok, opts);
 
   std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
   if (history.empty()) {
@@ -311,7 +300,7 @@ int main(int argc, char **argv) {
 
   const std::size_t vocab = model.config().vocab_size;
   std::int32_t pos = 0;
-  const float *logits = nullptr;
+  const float* logits = nullptr;
 
   std::size_t prefill_start = 0;
   if (!opts.kv_cache_load.empty()) {
@@ -394,10 +383,8 @@ int main(int argc, char **argv) {
       logits = masked.data();
     }
     std::int32_t next_tok = sampler.sample(logits, vocab, history);
-    if (next_tok == eos)
-      break;
-    if (matcher)
-      matcher->accept(next_tok);
+    if (next_tok == eos) break;
+    if (matcher) matcher->accept(next_tok);
     history.push_back(next_tok);
     if (opts.print_ids) {
       std::printf("%d\n", next_tok);
@@ -407,12 +394,10 @@ int main(int argc, char **argv) {
       std::fputs(piece.c_str(), stdout);
       std::fflush(stdout);
     }
-    if (matcher && opts.grammar_stop && matcher->complete())
-      break;
+    if (matcher && opts.grammar_stop && matcher->complete()) break;
     logits = model.forward(next_tok, pos++);
   }
-  if (!opts.print_ids)
-    std::fputc('\n', stdout);
+  if (!opts.print_ids) std::fputc('\n', stdout);
 
   return 0;
 }

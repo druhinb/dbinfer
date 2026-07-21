@@ -9,17 +9,16 @@
 
 namespace dbinfer::backend {
 
-Backend *active_backend() {
-  static Backend *const selected = [] -> Backend * {
-    const char *sel = std::getenv("DBINFER_BACKEND");
+Backend* active_backend() {
+  static Backend* const selected = [] -> Backend* {
+    const char* sel = std::getenv("DBINFER_BACKEND");
     const std::string_view name = sel != nullptr ? sel : "";
 #ifdef DBINFER_METAL
-    if (name == "metal")
-      return metal_backend();
+    if (name == "metal") return metal_backend();
 #endif
     return nullptr;
   }();
   return selected;
 }
 
-} // namespace dbinfer::backend
+}  // namespace dbinfer::backend
