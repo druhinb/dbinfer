@@ -285,6 +285,91 @@ std::expected<const char*, Error> parse_alternates(ParseState& st, const char* s
                                                    std::string_view rule_name,
                                                    std::uint32_t rule_id, bool is_nested);
 
+// consumes a `"..."` string literal, appending one Char element per decoded
+// codepoint starting at last_sym_start.
+std::expected<const char*, Error> parse_string_literal(const char* pos, std::vector<Element>& out,
+                                                       std::size_t& last_sym_start,
+                                                       bool is_nested) {
+  ++pos;
+  last_sym_start = out.size();
+  while (*pos != '"') {
+    if (*pos == 0) return std::unexpected(Error{"unterminated string literal"});
+    const std::uint32_t cpt = TRY(parse_char(pos, pos));
+    out.push_back({ElemType::Char, cpt});
+  }
+  return parse_space(pos + 1, is_nested);
+}
+
+// consumes a `[...]` character class, appending Char/CharNot then its
+// RngUpper and CharAlt continuations starting at last_sym_start.
+std::expected<const char*, Error> parse_char_class(const char* pos, std::vector<Element>& out,
+                                                   std::size_t& last_sym_start, bool is_nested) {
+  ++pos;
+  ElemType start_type = ElemType::Char;
+  if (*pos == '^') {
+    ++pos;
+    start_type = ElemType::CharNot;
+  }
+  last_sym_start = out.size();
+  while (*pos != ']') {
+    if (*pos == 0) return std::unexpected(Error{"unterminated character class"});
+    const std::uint32_t cpt = TRY(parse_char(pos, pos));
+    const ElemType type = last_sym_start < out.size() ? ElemType::CharAlt : start_type;
+    out.push_back({type, cpt});
+    if (pos[0] == '-' && pos[1] != ']' && pos[1] != 0) {
+      const std::uint32_t upper = TRY(parse_char(pos + 1, pos));
+      out.push_back({ElemType::RngUpper, upper});
+    }
+  }
+  return parse_space(pos + 1, is_nested);
+}
+
+// consumes a bare rule-name reference, appending one RuleRef element.
+const char* parse_rule_ref(ParseState& st, const char* pos, std::vector<Element>& out,
+                           std::size_t& last_sym_start, bool is_nested) {
+  const char* name_end = parse_name(pos);
+  const std::uint32_t ref = st.get_symbol_id(std::string_view(pos, name_end - pos));
+  pos = parse_space(name_end, is_nested);
+  last_sym_start = out.size();
+  out.push_back({ElemType::RuleRef, ref});
+  return pos;
+}
+
+// consumes a `(...)` group, recursing into parse_alternates for its body and
+// appending a RuleRef to the generated sub-rule.
+std::expected<const char*, Error> parse_group(ParseState& st, const char* pos,
+                                              std::string_view rule_name, std::vector<Element>& out,
+                                              std::size_t& last_sym_start, bool is_nested) {
+  pos = parse_space(pos + 1, true);
+  const std::uint32_t sub_id = st.generate_symbol_id(rule_name);
+  last_sym_start = out.size();
+  out.push_back({ElemType::RuleRef, sub_id});
+  if (*pos != ')') pos = TRY(parse_alternates(st, pos, rule_name, sub_id, true));
+  if (*pos != ')') return std::unexpected(Error{"expecting ')' to close group"});
+  return parse_space(pos + 1, is_nested);
+}
+
+// collapses the symbol at last_sym_start under a `*`/`+`/`?` operator into a
+// generated sub-rule, replacing it in out with one RuleRef.
+std::expected<const char*, Error> parse_repetition(ParseState& st, const char* pos,
+                                                   std::string_view rule_name,
+                                                   std::vector<Element>& out,
+                                                   std::size_t last_sym_start, bool is_nested) {
+  if (last_sym_start == out.size())
+    return std::unexpected(Error{"repetition operator with no preceding symbol"});
+  const std::uint32_t sub_id = st.generate_symbol_id(rule_name);
+  std::vector<Element> sub(out.begin() + static_cast<std::ptrdiff_t>(last_sym_start), out.end());
+  if (*pos == '*' || *pos == '+') sub.push_back({ElemType::RuleRef, sub_id});
+  sub.push_back({ElemType::Alt, 0});
+  if (*pos == '+')
+    sub.insert(sub.end(), out.begin() + static_cast<std::ptrdiff_t>(last_sym_start), out.end());
+  sub.push_back({ElemType::End, 0});
+  st.add_rule(sub_id, std::move(sub));
+  out.resize(last_sym_start);
+  out.push_back({ElemType::RuleRef, sub_id});
+  return parse_space(pos + 1, is_nested);
+}
+
 std::expected<const char*, Error> parse_sequence(ParseState& st, const char* src,
                                                  std::string_view rule_name,
                                                  std::vector<Element>& out, bool is_nested) {
@@ -292,62 +377,15 @@ std::expected<const char*, Error> parse_sequence(ParseState& st, const char* src
   const char* pos = src;
   while (*pos != 0) {
     if (*pos == '"') {
-      ++pos;
-      last_sym_start = out.size();
-      while (*pos != '"') {
-        if (*pos == 0) return std::unexpected(Error{"unterminated string literal"});
-        const std::uint32_t cpt = TRY(parse_char(pos, pos));
-        out.push_back({ElemType::Char, cpt});
-      }
-      pos = parse_space(pos + 1, is_nested);
+      pos = TRY(parse_string_literal(pos, out, last_sym_start, is_nested));
     } else if (*pos == '[') {
-      ++pos;
-      ElemType start_type = ElemType::Char;
-      if (*pos == '^') {
-        ++pos;
-        start_type = ElemType::CharNot;
-      }
-      last_sym_start = out.size();
-      while (*pos != ']') {
-        if (*pos == 0) return std::unexpected(Error{"unterminated character class"});
-        const std::uint32_t cpt = TRY(parse_char(pos, pos));
-        const ElemType type = last_sym_start < out.size() ? ElemType::CharAlt : start_type;
-        out.push_back({type, cpt});
-        if (pos[0] == '-' && pos[1] != ']' && pos[1] != 0) {
-          const std::uint32_t upper = TRY(parse_char(pos + 1, pos));
-          out.push_back({ElemType::RngUpper, upper});
-        }
-      }
-      pos = parse_space(pos + 1, is_nested);
+      pos = TRY(parse_char_class(pos, out, last_sym_start, is_nested));
     } else if (is_word_char(*pos)) {
-      const char* name_end = parse_name(pos);
-      const std::uint32_t ref = st.get_symbol_id(std::string_view(pos, name_end - pos));
-      pos = parse_space(name_end, is_nested);
-      last_sym_start = out.size();
-      out.push_back({ElemType::RuleRef, ref});
+      pos = parse_rule_ref(st, pos, out, last_sym_start, is_nested);
     } else if (*pos == '(') {
-      pos = parse_space(pos + 1, true);
-      const std::uint32_t sub_id = st.generate_symbol_id(rule_name);
-      last_sym_start = out.size();
-      out.push_back({ElemType::RuleRef, sub_id});
-      if (*pos != ')') pos = TRY(parse_alternates(st, pos, rule_name, sub_id, true));
-      if (*pos != ')') return std::unexpected(Error{"expecting ')' to close group"});
-      pos = parse_space(pos + 1, is_nested);
+      pos = TRY(parse_group(st, pos, rule_name, out, last_sym_start, is_nested));
     } else if (*pos == '*' || *pos == '+' || *pos == '?') {
-      if (last_sym_start == out.size())
-        return std::unexpected(Error{"repetition operator with no preceding symbol"});
-      const std::uint32_t sub_id = st.generate_symbol_id(rule_name);
-      std::vector<Element> sub(out.begin() + static_cast<std::ptrdiff_t>(last_sym_start),
-                               out.end());
-      if (*pos == '*' || *pos == '+') sub.push_back({ElemType::RuleRef, sub_id});
-      sub.push_back({ElemType::Alt, 0});
-      if (*pos == '+')
-        sub.insert(sub.end(), out.begin() + static_cast<std::ptrdiff_t>(last_sym_start), out.end());
-      sub.push_back({ElemType::End, 0});
-      st.add_rule(sub_id, std::move(sub));
-      out.resize(last_sym_start);
-      out.push_back({ElemType::RuleRef, sub_id});
-      pos = parse_space(pos + 1, is_nested);
+      pos = TRY(parse_repetition(st, pos, rule_name, out, last_sym_start, is_nested));
     } else {
       break;
     }
