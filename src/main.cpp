@@ -23,6 +23,11 @@
 #include "tensor/thread_pool.hpp"
 #include "tokenizer/tokenizer.hpp"
 
+using dbinfer::cli::CliOptions;
+using dbinfer::gguf::to_string;
+using dbinfer::model::Model;
+using dbinfer::tokenizer::Tokenizer;
+
 namespace {
 
 // DBMF_VERIFY=1 recomputes every tensor's xxhash64 at load. off by default so
@@ -45,10 +50,22 @@ std::optional<std::string> read_file(const char* path) {
   return data;
 }
 
+// per-token negative log-likelihood: max-subtract logsumexp in double, then
+// logsumexp minus the target logit. reduction order is a parity contract
+// with llama.cpp perplexity numbers (VERIFICATION.md); do not reorder.
+double token_nll(const float* logits, std::size_t vocab, std::int32_t target) {
+  float max_logit = logits[0];
+  for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
+  double sum_exp = 0.0;
+  for (std::size_t i = 0; i < vocab; ++i)
+    sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
+  const double logsumexp = static_cast<double>(max_logit) + std::log(sum_exp);
+  return logsumexp - static_cast<double>(logits[target]);
+}
+
 // classic llama.cpp perplexity: non-overlapping 512-token windows, scoring
 // only the second half so every scored token has 256+ tokens of left context.
-int run_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Tokenizer& tok,
-                   const dbinfer::cli::CliOptions& opts) {
+int run_perplexity(Model& model, const Tokenizer& tok, const CliOptions& opts) {
   auto text = read_file(opts.perplexity_path.c_str());
   if (!text) {
     std::fprintf(stderr, "error: cannot read %s\n", opts.perplexity_path.c_str());
@@ -60,7 +77,7 @@ int run_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Token
   if (bos >= 0) tokens.insert(tokens.begin(), bos);
 
   constexpr std::size_t n_ctx = 512;
-  constexpr std::size_t score_lo = n_ctx / 2;  // 256
+  constexpr std::size_t score_lo = n_ctx / 2;
   const std::size_t vocab = model.config().vocab_size;
 
   if (tokens.size() < n_ctx) {
@@ -79,14 +96,7 @@ int run_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Token
     for (std::size_t j = 0; j < n_ctx; ++j) {
       const float* logits = model.forward(tokens[start + j], static_cast<std::int32_t>(j));
       if (j < score_lo || j + 1 >= n_ctx) continue;
-      float max_logit = logits[0];
-      for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
-      double sum_exp = 0.0;
-      for (std::size_t i = 0; i < vocab; ++i)
-        sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-      const double logsumexp = static_cast<double>(max_logit) + std::log(sum_exp);
-      const std::int32_t target = tokens[start + j + 1];
-      nll += logsumexp - static_cast<double>(logits[target]);
+      nll += token_nll(logits, vocab, tokens[start + j + 1]);
       ++count;
     }
     std::fprintf(stderr, "chunk %zu/%zu ppl %.4f\n", w + 1, n_chunk,
@@ -101,8 +111,7 @@ int run_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Token
 // streaming perplexity: one continuous context with monotonically increasing
 // position, no window resets. per-token NLL bucketed by position exposes
 // whether a ring cache stays flat or diverges as position passes the window.
-int run_stream_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer::Tokenizer& tok,
-                          const dbinfer::cli::CliOptions& opts) {
+int run_stream_perplexity(Model& model, const Tokenizer& tok, const CliOptions& opts) {
   auto text = read_file(opts.perplexity_path.c_str());
   if (!text) {
     std::fprintf(stderr, "error: cannot read %s\n", opts.perplexity_path.c_str());
@@ -130,23 +139,16 @@ int run_stream_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer
   std::size_t count = 0;
   for (std::size_t j = 0; j + 1 < limit; ++j) {
     const float* logits = model.forward(tokens[j], static_cast<std::int32_t>(j));
-    float max_logit = logits[0];
-    for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
-    double sum_exp = 0.0;
-    for (std::size_t i = 0; i < vocab; ++i)
-      sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
-    const double logsumexp = static_cast<double>(max_logit) + std::log(sum_exp);
-    const std::int32_t target = tokens[j + 1];
-    const double token_nll = logsumexp - static_cast<double>(logits[target]);
+    const double tnll = token_nll(logits, vocab, tokens[j + 1]);
 
     const std::size_t b = j / bucket_size;
     if (b >= bucket_nll.size()) {
       bucket_nll.resize(b + 1, 0.0);
       bucket_count.resize(b + 1, 0);
     }
-    bucket_nll[b] += token_nll;
+    bucket_nll[b] += tnll;
     ++bucket_count[b];
-    nll += token_nll;
+    nll += tnll;
     ++count;
   }
 
@@ -162,21 +164,18 @@ int run_stream_perplexity(dbinfer::model::Model& model, const dbinfer::tokenizer
 // them in one batched forward. greedy, so the output is token-identical to
 // target-only decode. loads the draft, checks vocab and cache compatibility,
 // prints the generated tokens, and logs the acceptance rate to stderr.
-int run_speculative(dbinfer::model::Model& target, const dbinfer::tokenizer::Tokenizer& tok,
-                    const dbinfer::cli::CliOptions& opts) {
+int run_speculative(Model& target, const Tokenizer& tok, const CliOptions& opts) {
   auto dloaded = dbinfer::dbmf::load_model(opts.draft_model, read_opts());
   if (!dloaded) {
-    std::fprintf(stderr, "error: load draft model: %s\n",
-                 dbinfer::gguf::to_string(dloaded.error()).c_str());
+    std::fprintf(stderr, "error: load draft model: %s\n", to_string(dloaded.error()).c_str());
     return 1;
   }
-  auto dret = dbinfer::model::Model::load(*dloaded);
+  auto dret = Model::load(*dloaded);
   if (!dret) {
-    std::fprintf(stderr, "error: load draft model: %s\n",
-                 dbinfer::gguf::to_string(dret.error()).c_str());
+    std::fprintf(stderr, "error: load draft model: %s\n", to_string(dret.error()).c_str());
     return 1;
   }
-  dbinfer::model::Model& draft = *dret;
+  Model& draft = *dret;
 
   if (draft.config().vocab_size != target.config().vocab_size) {
     std::fprintf(stderr, "error: draft/target vocab mismatch (%zu vs %zu)\n",
@@ -219,77 +218,44 @@ int run_speculative(dbinfer::model::Model& target, const dbinfer::tokenizer::Tok
   return 0;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  auto parsed = dbinfer::cli::parse_args(argc, argv);
-  if (!parsed) {
-    std::fprintf(stderr, "error: %s\n", parsed.error().message.c_str());
-    std::fputs(dbinfer::cli::usage(argv[0]).c_str(), stderr);
-    return 2;
-  }
-  const dbinfer::cli::CliOptions& opts = *parsed;
-
-  auto loaded = dbinfer::dbmf::load_model(opts.model_path, read_opts());
-  if (!loaded) {
-    std::fprintf(stderr, "error: load model: %s\n",
-                 dbinfer::gguf::to_string(loaded.error()).c_str());
-    return 1;
-  }
-  auto mret = dbinfer::model::Model::load(*loaded);
-  if (!mret) {
-    std::fprintf(stderr, "error: load model: %s\n", dbinfer::gguf::to_string(mret.error()).c_str());
-    return 1;
-  }
-  auto tret = dbinfer::tokenizer::Tokenizer::from_gguf(*loaded);
-  if (!tret) {
-    std::fprintf(stderr, "error: tokenizer: %s\n", dbinfer::gguf::to_string(tret.error()).c_str());
-    return 1;
-  }
-  dbinfer::model::Model& model = *mret;
-  const dbinfer::tokenizer::Tokenizer& tok = *tret;
-
-  if (opts.threads > 0)
-    dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
-
-  if (opts.kv_window > 0 || opts.kv_int8)
-    model.configure_kv(
-        {static_cast<std::size_t>(opts.kv_sink), static_cast<std::size_t>(opts.kv_window),
-         opts.kv_int8 ? dbinfer::model::KvDtype::Int8 : dbinfer::model::KvDtype::F32});
-
+// resolves --gpu-layers (falling back to DBINFER_GPU_LAYERS), validates the
+// device and cache mode, and offloads the first n layers. 0 means dense CPU
+// only. returns 1 and prints an error on any mismatch, 0 otherwise.
+int setup_gpu_offload(Model& model, const CliOptions& opts) {
   int gpu_layers = opts.gpu_layers;
   if (gpu_layers < 0) {
     const char* env = std::getenv("DBINFER_GPU_LAYERS");
     gpu_layers = env != nullptr ? std::atoi(env) : 0;
   }
-  if (gpu_layers > 0) {
-    dbinfer::backend::Backend* be = nullptr;
+  if (gpu_layers <= 0) return 0;
+
+  dbinfer::backend::Backend* be = nullptr;
 #ifdef DBINFER_METAL
-    be = dbinfer::backend::metal_backend();
+  be = dbinfer::backend::metal_backend();
 #endif
-    if (be == nullptr) {
-      std::fprintf(stderr, "error: --gpu-layers needs a Metal device\n");
-      return 1;
-    }
-    if (opts.kv_window > 0 || opts.kv_int8) {
-      std::fprintf(stderr, "error: --gpu-layers requires the dense fp32 cache\n");
-      return 1;
-    }
-    const std::size_t n =
-        std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), model.config().n_layers);
-    if (!model.layers_offloadable(n)) {
-      std::fprintf(stderr, "error: --gpu-layers requires F16, Q8_0, or Q4_0 weights\n");
-      return 1;
-    }
-    if (!model.set_gpu_offload(be, n)) return 1;
+  if (be == nullptr) {
+    std::fprintf(stderr, "error: --gpu-layers needs a Metal device\n");
+    return 1;
   }
+  if (opts.kv_window > 0 || opts.kv_int8) {
+    std::fprintf(stderr, "error: --gpu-layers requires the dense fp32 cache\n");
+    return 1;
+  }
+  const std::size_t n =
+      std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), model.config().n_layers);
+  if (!model.layers_offloadable(n)) {
+    std::fprintf(stderr, "error: --gpu-layers requires F16, Q8_0, or Q4_0 weights\n");
+    return 1;
+  }
+  if (!model.set_gpu_offload(be, n)) return 1;
+  return 0;
+}
 
-  if (!opts.perplexity_path.empty())
-    return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
-                           : run_perplexity(model, tok, opts);
-
-  if (!opts.draft_model.empty()) return run_speculative(model, tok, opts);
-
+// greedy/sampled generation: tokenizes the prompt, resumes from a loaded kv
+// prefix when given, prefills the rest (chunked or per-token), optionally
+// saves the prefix cache and applies a grammar, then decodes until eos or
+// the -n budget runs out.
+int run_generate(Model& model, const Tokenizer& tok, const CliOptions& opts) {
   std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
   if (history.empty()) {
     std::fprintf(stderr, "error: prompt tokenized to zero tokens\n");
@@ -306,8 +272,7 @@ int main(int argc, char** argv) {
   if (!opts.kv_cache_load.empty()) {
     auto loaded_prefix = model.load_kv_prefix(opts.kv_cache_load, history);
     if (!loaded_prefix) {
-      std::fprintf(stderr, "error: kv cache load: %s\n",
-                   dbinfer::gguf::to_string(loaded_prefix.error()).c_str());
+      std::fprintf(stderr, "error: kv cache load: %s\n", to_string(loaded_prefix.error()).c_str());
       return 1;
     }
     prefill_start = *loaded_prefix;
@@ -342,8 +307,7 @@ int main(int argc, char** argv) {
     auto saved = model.save_kv_prefix(
         opts.kv_cache_save, std::span<const std::int32_t>(history.data(), history.size()));
     if (!saved) {
-      std::fprintf(stderr, "error: kv cache save: %s\n",
-                   dbinfer::gguf::to_string(saved.error()).c_str());
+      std::fprintf(stderr, "error: kv cache save: %s\n", to_string(saved.error()).c_str());
       return 1;
     }
   }
@@ -400,4 +364,54 @@ int main(int argc, char** argv) {
   if (!opts.print_ids) std::fputc('\n', stdout);
 
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  auto parsed = dbinfer::cli::parse_args(argc, argv);
+  if (!parsed) {
+    std::fprintf(stderr, "error: %s\n", parsed.error().message.c_str());
+    std::fputs(dbinfer::cli::usage(argv[0]).c_str(), stderr);
+    return 2;
+  }
+  const CliOptions& opts = *parsed;
+
+  auto loaded = dbinfer::dbmf::load_model(opts.model_path, read_opts());
+  if (!loaded) {
+    std::fprintf(stderr, "error: load model: %s\n", to_string(loaded.error()).c_str());
+    return 1;
+  }
+  auto mret = Model::load(*loaded);
+  if (!mret) {
+    std::fprintf(stderr, "error: load model: %s\n", to_string(mret.error()).c_str());
+    return 1;
+  }
+  auto tret = Tokenizer::from_gguf(*loaded);
+  if (!tret) {
+    std::fprintf(stderr, "error: tokenizer: %s\n", to_string(tret.error()).c_str());
+    return 1;
+  }
+  Model& model = *mret;
+  const Tokenizer& tok = *tret;
+
+  if (opts.threads > 0)
+    dbinfer::tensor::configure_thread_count(static_cast<std::size_t>(opts.threads));
+
+  if (opts.kv_window > 0 || opts.kv_int8)
+    model.configure_kv(
+        {static_cast<std::size_t>(opts.kv_sink), static_cast<std::size_t>(opts.kv_window),
+         opts.kv_int8 ? dbinfer::model::KvDtype::Int8 : dbinfer::model::KvDtype::F32});
+
+  if (int err = setup_gpu_offload(model, opts); err != 0) {
+    return err;
+  }
+
+  if (!opts.perplexity_path.empty())
+    return opts.ppl_stream ? run_stream_perplexity(model, tok, opts)
+                           : run_perplexity(model, tok, opts);
+
+  if (!opts.draft_model.empty()) return run_speculative(model, tok, opts);
+
+  return run_generate(model, tok, opts);
 }
