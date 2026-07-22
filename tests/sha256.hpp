@@ -1,5 +1,5 @@
-// Self-contained SHA-256. Public-domain algorithm (FIPS 180-4), our own code.
-// Keeps the stdlib-only rule intact: no CommonCrypto / OpenSSL dependency.
+// Self-contained SHA-256, public-domain algorithm (FIPS 180-4).
+// No CommonCrypto / OpenSSL dependency.
 // Header-only, no exceptions, no allocations beyond the returned std::string.
 #ifndef DBINFER_TESTS_SHA256_HPP
 #define DBINFER_TESTS_SHA256_HPP

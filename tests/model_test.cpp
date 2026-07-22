@@ -5,40 +5,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <string>
 #include <vector>
 
 #include "gguf/gguf.hpp"
+#include "test_util.hpp"
 
-#ifndef DBINFER_GOLDEN_DIR
-#error "DBINFER_GOLDEN_DIR must be defined by the build"
-#endif
 #ifndef DBINFER_TEST_GGUF
 #error "DBINFER_TEST_GGUF must be defined by the build"
 #endif
 
 namespace {
 
-int g_failures = 0;
-
-std::vector<float> load_bin(const char* name, std::size_t expect_n) {
-  std::string path = std::string(DBINFER_GOLDEN_DIR) + "/" + name;
-  std::FILE* f = std::fopen(path.c_str(), "rb");
-  if (f == nullptr) {
-    std::printf("FAIL cannot open %s\n", path.c_str());
-    ++g_failures;
-    return {};
-  }
-  std::vector<float> v(expect_n);
-  std::size_t got = std::fread(v.data(), sizeof(float), expect_n, f);
-  std::fclose(f);
-  if (got != expect_n) {
-    std::printf("FAIL %s read %zu of %zu floats\n", name, got, expect_n);
-    ++g_failures;
-    return {};
-  }
-  return v;
-}
+using dbinfer::test::g_failures;
+using dbinfer::test::load_bin;
 
 // allclose per numpy
 void check(const char* what, const std::vector<float>& got, const std::vector<float>& ref) {

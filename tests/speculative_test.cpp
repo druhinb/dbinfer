@@ -26,6 +26,7 @@ void expect(bool ok, const char* what) {
   }
 }
 
+#if defined(DBINFER_SPEC_TARGET) && defined(DBINFER_SPEC_DRAFT)
 std::int32_t argmax(const float* logits, std::size_t n) {
   std::int32_t best = 0;
   float bestv = logits[0];
@@ -36,6 +37,7 @@ std::int32_t argmax(const float* logits, std::size_t n) {
     }
   return best;
 }
+#endif
 
 // deterministic greedy oracle keyed only on the last token, so a pure integer
 // simulation can stand in for a real target model.

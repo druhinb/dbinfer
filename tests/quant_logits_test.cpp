@@ -3,11 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <string>
 #include <vector>
 
 #include "gguf/gguf.hpp"
 #include "model/model.hpp"
+#include "test_util.hpp"
 
 // q8_0 forward-pass integration check against the fp32 reference logits.
 //
@@ -22,35 +22,14 @@
 // and it is diagnostic only. end-to-end q8_0 correctness against the oracle is
 // covered by parity and perplexity (docs/VERIFICATION.md layers 3-4).
 
-#ifndef DBINFER_GOLDEN_DIR
-#error "DBINFER_GOLDEN_DIR must be defined by the build"
-#endif
 #ifndef DBINFER_QUANT_Q8_GGUF
 #error "DBINFER_QUANT_Q8_GGUF must be defined by the build"
 #endif
 
 namespace {
 
-int g_failures = 0;
-
-std::vector<float> load_bin(const char* name, std::size_t expect_n) {
-  std::string path = std::string(DBINFER_GOLDEN_DIR) + "/" + name;
-  std::FILE* f = std::fopen(path.c_str(), "rb");
-  if (f == nullptr) {
-    std::printf("FAIL cannot open %s\n", path.c_str());
-    ++g_failures;
-    return {};
-  }
-  std::vector<float> v(expect_n);
-  std::size_t got = std::fread(v.data(), sizeof(float), expect_n, f);
-  std::fclose(f);
-  if (got != expect_n) {
-    std::printf("FAIL %s read %zu of %zu floats\n", name, got, expect_n);
-    ++g_failures;
-    return {};
-  }
-  return v;
-}
+using dbinfer::test::g_failures;
+using dbinfer::test::load_bin;
 
 std::size_t argmax(const float* v, std::size_t n) {
   std::size_t best = 0;

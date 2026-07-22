@@ -10,7 +10,6 @@
 namespace {
 
 using dbinfer::gguf::MetaArray;
-using dbinfer::gguf::MetaType;
 using dbinfer::gguf::MetaValue;
 
 std::string scalar_to_string(const MetaValue& mv) {
