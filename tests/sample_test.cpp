@@ -34,7 +34,12 @@ bool approx(float a, float b, float eps = 1e-6f) { return std::fabs(a - b) <= ep
 }  // namespace
 
 int main() {
-  using namespace dbinfer::sample;
+  using dbinfer::sample::argmax;
+  using dbinfer::sample::min_p;
+  using dbinfer::sample::Sampler;
+  using dbinfer::sample::SamplerParams;
+  using dbinfer::sample::top_k;
+  using dbinfer::sample::top_p;
 
   {
     std::vector<float> v = {0.1f, 0.9f, 0.3f, -1.0f};

@@ -45,7 +45,9 @@ bool rejected(const Grammar& g, std::string_view s) {
   return !g.feed(st, s).has_value();
 }
 
-const std::string kJson =
+}  // namespace
+
+const char kJson[] =
     "root   ::= object\n"
     "value  ::= object | array | string | number | (\"true\" | \"false\" | \"null\") ws\n"
     "object ::= \"{\" ws ( string \":\" ws value (\",\" ws string \":\" ws value)* )? \"}\" ws\n"
@@ -54,8 +56,6 @@ const std::string kJson =
     "[0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]) )* \"\\\"\" ws\n"
     "number ::= (\"-\"? ([0-9] | [1-9] [0-9]*)) (\".\" [0-9]+)? ([eE] [-+]? [0-9]+)? ws\n"
     "ws ::= ([ \\t\\n] ws)?\n";
-
-}  // namespace
 
 int main() {
   {

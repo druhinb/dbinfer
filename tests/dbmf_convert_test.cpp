@@ -116,7 +116,14 @@ struct Owned {
 };
 
 dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned>& store) {
-  using namespace dbinfer::gguf;
+  using dbinfer::gguf::GgmlType;
+  using dbinfer::gguf::GgufFile;
+  using dbinfer::gguf::MetaArray;
+  using dbinfer::gguf::MetaType;
+  using dbinfer::gguf::MetaValue;
+  using dbinfer::gguf::TensorInfo;
+  using dbinfer::gguf::type_info;
+  using dbinfer::gguf::TypeInfo;
   GgufFile f;
   f.version = 3;
   f.alignment = 32;
@@ -195,7 +202,7 @@ void roundtrip_and_dedup(std::vector<Owned>& store) {
     return;
   }
   std::printf("PASS synthetic     round-trip + dedup (tied tensor shares offset %llu)\n",
-              static_cast<unsigned long long>(e->offset));
+              static_cast<std::uint64_t>(e->offset));
 }
 
 void corruption_gate(std::vector<Owned>& store) {

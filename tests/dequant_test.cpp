@@ -69,27 +69,27 @@ int main() {
 
   {
     float v = f16_to_f32(0x7C00);
-    if (std::isinf(v) && v > 0.0f)
+    if (std::isinf(v) && v > 0.0f) {
       std::printf("PASS %-24s +inf\n", "0x7C00 -> +inf");
-    else {
+    } else {
       std::printf("FAIL 0x7C00 -> not +inf (%.9g)\n", static_cast<double>(v));
       ++g_failures;
     }
   }
   {
     float v = f16_to_f32(0xFC00);
-    if (std::isinf(v) && v < 0.0f)
+    if (std::isinf(v) && v < 0.0f) {
       std::printf("PASS %-24s -inf\n", "0xFC00 -> -inf");
-    else {
+    } else {
       std::printf("FAIL 0xFC00 -> not -inf (%.9g)\n", static_cast<double>(v));
       ++g_failures;
     }
   }
   {
     float v = f16_to_f32(0x7E00);  // a NaN pattern (exp=31, mant!=0)
-    if (std::isnan(v))
+    if (std::isnan(v)) {
       std::printf("PASS %-24s NaN\n", "0x7E00 -> NaN");
-    else {
+    } else {
       std::printf("FAIL 0x7E00 -> not NaN (%.9g)\n", static_cast<double>(v));
       ++g_failures;
     }
@@ -453,9 +453,11 @@ int main() {
   // 1 + 1/2048 sits halfway between mant 0 and mant 1, even wins.
   check_u16("f32->f16 tie down", f32_to_f16(1.00048828125f), 0x3C00);
 
-  for (std::uint16_t bits : {std::uint16_t(0x0000), std::uint16_t(0x8000), std::uint16_t(0x3C00),
-                             std::uint16_t(0xC000), std::uint16_t(0x0001), std::uint16_t(0x7BFF),
-                             std::uint16_t(0x2C00), std::uint16_t(0x3800)}) {
+  for (std::uint16_t bits :
+       {static_cast<std::uint16_t>(0x0000), static_cast<std::uint16_t>(0x8000),
+        static_cast<std::uint16_t>(0x3C00), static_cast<std::uint16_t>(0xC000),
+        static_cast<std::uint16_t>(0x0001), static_cast<std::uint16_t>(0x7BFF),
+        static_cast<std::uint16_t>(0x2C00), static_cast<std::uint16_t>(0x3800)}) {
     char name[32];
     std::snprintf(name, sizeof name, "f16 roundtrip 0x%04X", bits);
     check_u16(name, f32_to_f16(f16_to_f32(bits)), bits);
