@@ -15,6 +15,7 @@
 
 #include "dbmf/huffman.hpp"
 #include "dbmf/xxhash.hpp"
+#include "gguf/reader.hpp"
 #include "try.hpp"
 
 namespace dbinfer::dbmf {
@@ -27,10 +28,9 @@ using gguf::MetaArray;
 using gguf::MetaType;
 using gguf::MetaValue;
 using gguf::TensorInfo;
+using gguf::detail::Cursor;
 
 namespace {
-
-std::uint64_t align_up(std::uint64_t x, std::uint64_t a) { return (x + a - 1) / a * a; }
 
 // ---- writing -------------------------------------------------------------
 
@@ -138,13 +138,11 @@ struct Writer {
   }
 };
 
-std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& path,
-                                        const ConvertOptions& opts) {
-  const std::size_t nt = src.tensors.size();
-  const std::vector<std::size_t> order = usage_order(src.tensors);
-
-  std::vector<Prepared> prep(nt);
-  for (std::size_t i = 0; i < nt; ++i) {
+std::expected<std::vector<Prepared>, Error> prepare_tensors(const GgufFile& src,
+                                                            const ConvertOptions& opts,
+                                                            const std::string& path) {
+  std::vector<Prepared> prep(src.tensors.size());
+  for (std::size_t i = 0; i < prep.size(); ++i) {
     const TensorInfo& t = src.tensors[i];
     if (t.data == nullptr)
       return std::unexpected(Error{"tensor '" + t.name + "' has no bound data", path, 0});
@@ -160,37 +158,69 @@ std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& 
       }
     }
   }
+  return prep;
+}
 
+ByteBuf encode_metadata(const GgufFile& src) {
   ByteBuf meta;
   for (const auto& kv : src.metadata) {
     meta.put_string(kv.first);
     meta.put<std::uint32_t>(static_cast<std::uint32_t>(meta_type_of(kv.second)));
     put_meta_value(meta, kv.second);
   }
+  return meta;
+}
 
+struct StringPool {
   ByteBuf pool;
-  std::vector<std::uint64_t> name_off(nt);
-  for (std::size_t j = 0; j < order.size(); ++j) {
-    const std::size_t i = order[j];
-    name_off[i] = pool.data.size();
-    pool.put_bytes(reinterpret_cast<const std::byte*>(src.tensors[i].name.data()),
-                   src.tensors[i].name.size());
+  std::vector<std::uint64_t> name_off;
+};
+
+StringPool build_string_pool(const GgufFile& src, const std::vector<std::size_t>& order) {
+  StringPool sp;
+  sp.name_off.resize(src.tensors.size());
+  for (const std::size_t i : order) {
+    sp.name_off[i] = sp.pool.data.size();
+    sp.pool.put_bytes(reinterpret_cast<const std::byte*>(src.tensors[i].name.data()),
+                      src.tensors[i].name.size());
   }
+  return sp;
+}
 
-  const std::uint64_t metadata_offset = kHeaderSize;
-  const std::uint64_t metadata_size = meta.data.size();
-  const std::uint64_t string_pool_offset = metadata_offset + metadata_size;
-  const std::uint64_t string_pool_size = pool.data.size();
-  const std::uint64_t tensor_table_offset = string_pool_offset + string_pool_size;
-  const std::uint64_t tensor_table_size = kRecordSize * nt;
-  const std::uint64_t data_offset = align_up(tensor_table_offset + tensor_table_size, kAlignment);
+struct Layout {
+  std::uint64_t metadata_offset;
+  std::uint64_t metadata_size;
+  std::uint64_t string_pool_offset;
+  std::uint64_t string_pool_size;
+  std::uint64_t tensor_table_offset;
+  std::uint64_t tensor_table_size;
+  std::uint64_t data_offset;
+};
 
-  // assign data offsets in write order, deduplicating byte-equal tensors.
+Layout compute_layout(std::size_t nt, std::uint64_t metadata_size, std::uint64_t string_pool_size) {
+  Layout l;
+  l.metadata_offset = kHeaderSize;
+  l.metadata_size = metadata_size;
+  l.string_pool_offset = l.metadata_offset + l.metadata_size;
+  l.string_pool_size = string_pool_size;
+  l.tensor_table_offset = l.string_pool_offset + l.string_pool_size;
+  l.tensor_table_size = kRecordSize * nt;
+  l.data_offset = gguf::detail::align_up(l.tensor_table_offset + l.tensor_table_size, kAlignment);
+  return l;
+}
+
+struct Assigned {
+  std::uint64_t running = 0;
+  std::uint64_t file_size = 0;
+  bool any_compressed = false;
+};
+
+// assigns data offsets in write order, deduplicating byte-equal tensors.
+Assigned assign_offsets(const GgufFile& src, const std::vector<std::size_t>& order,
+                        std::uint64_t data_offset, std::vector<Prepared>& prep) {
   using DedupKey = std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>;
   std::map<DedupKey, std::size_t> owners;
-  std::uint64_t running = data_offset;
-  std::uint64_t file_size = data_offset;
-  bool any_compressed = false;
+  Assigned a{data_offset, data_offset, false};
   for (const std::size_t i : order) {
     const TensorInfo& t = src.tensors[i];
     const DedupKey key{prep[i].xxh, prep[i].logical, static_cast<std::uint32_t>(t.type)};
@@ -205,19 +235,23 @@ std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& 
       }
     }
     if (!shared) {
-      const std::uint64_t off = align_up(running, kAlignment);
+      const std::uint64_t off = gguf::detail::align_up(a.running, kAlignment);
       prep[i].data_offset = off;
       prep[i].owner = true;
-      running = off + prep[i].stored;
-      file_size = running;
+      a.running = off + prep[i].stored;
+      a.file_size = a.running;
       owners.emplace(key, i);
     }
-    any_compressed = any_compressed || prep[i].compressed;
+    a.any_compressed = a.any_compressed || prep[i].compressed;
   }
+  return a;
+}
 
+ByteBuf encode_table(const GgufFile& src, const std::vector<std::size_t>& order,
+                     const std::vector<std::uint64_t>& name_off,
+                     const std::vector<Prepared>& prep) {
   ByteBuf table;
-  for (std::size_t j = 0; j < order.size(); ++j) {
-    const std::size_t i = order[j];
+  for (const std::size_t i : order) {
     const TensorInfo& t = src.tensors[i];
     const std::size_t start = table.data.size();
     table.put<std::uint64_t>(name_off[i]);
@@ -232,26 +266,37 @@ std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& 
     table.put<std::uint64_t>(prep[i].xxh);
     table.pad_to(start + kRecordSize);
   }
+  return table;
+}
 
+ByteBuf encode_header(std::uint64_t nt, std::uint64_t metadata_count, const Layout& layout,
+                      std::uint64_t file_size, bool any_compressed) {
   ByteBuf header;
   header.put<std::uint32_t>(kMagic);
   header.put<std::uint32_t>(kVersion);
   header.put<std::uint32_t>(static_cast<std::uint32_t>(kAlignment));
   header.put<std::uint32_t>(any_compressed ? kFlagCompressed : 0u);
   header.put<std::uint64_t>(nt);
-  header.put<std::uint64_t>(src.metadata.size());
-  header.put<std::uint64_t>(metadata_offset);
-  header.put<std::uint64_t>(metadata_size);
-  header.put<std::uint64_t>(string_pool_offset);
-  header.put<std::uint64_t>(string_pool_size);
-  header.put<std::uint64_t>(tensor_table_offset);
-  header.put<std::uint64_t>(tensor_table_size);
-  header.put<std::uint64_t>(data_offset);
+  header.put<std::uint64_t>(metadata_count);
+  header.put<std::uint64_t>(layout.metadata_offset);
+  header.put<std::uint64_t>(layout.metadata_size);
+  header.put<std::uint64_t>(layout.string_pool_offset);
+  header.put<std::uint64_t>(layout.string_pool_size);
+  header.put<std::uint64_t>(layout.tensor_table_offset);
+  header.put<std::uint64_t>(layout.tensor_table_size);
+  header.put<std::uint64_t>(layout.data_offset);
   header.put<std::uint64_t>(file_size);
   const std::uint64_t header_checksum = xxhash64(header.data.data(), header.data.size());
   header.put<std::uint64_t>(header_checksum);
   header.pad_to(kHeaderSize);
+  return header;
+}
 
+std::expected<void, Error> write_file(const std::string& path, const ByteBuf& header,
+                                      const ByteBuf& meta, const ByteBuf& pool,
+                                      const ByteBuf& table, std::uint64_t data_offset,
+                                      const GgufFile& src, const std::vector<std::size_t>& order,
+                                      const std::vector<Prepared>& prep) {
   FilePtr fp(std::fopen(path.c_str(), "wb"));
   if (!fp)
     return std::unexpected(
@@ -274,91 +319,25 @@ std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& 
   return {};
 }
 
+std::expected<void, Error> convert_impl(const GgufFile& src, const std::string& path,
+                                        const ConvertOptions& opts) {
+  const std::size_t nt = src.tensors.size();
+  const std::vector<std::size_t> order = usage_order(src.tensors);
+
+  std::vector<Prepared> prep = TRY(prepare_tensors(src, opts, path));
+  const ByteBuf meta = encode_metadata(src);
+  StringPool sp = build_string_pool(src, order);
+  const Layout layout = compute_layout(nt, meta.data.size(), sp.pool.data.size());
+
+  const Assigned assigned = assign_offsets(src, order, layout.data_offset, prep);
+  const ByteBuf table = encode_table(src, order, sp.name_off, prep);
+  const ByteBuf header =
+      encode_header(nt, src.metadata.size(), layout, assigned.file_size, assigned.any_compressed);
+
+  return write_file(path, header, meta, sp.pool, table, layout.data_offset, src, order, prep);
+}
+
 // ---- reading -------------------------------------------------------------
-
-struct Cursor {
-  const std::byte* base;
-  std::uint64_t size;
-  const std::string& path;
-  std::uint64_t pos = 0;
-
-  Error eof(std::uint64_t need) const {
-    return Error{"unexpected EOF: need " + std::to_string(need) + " bytes at offset " +
-                     std::to_string(pos) + ", file is " + std::to_string(size) + " bytes",
-                 path, pos};
-  }
-  template <typename T>
-  std::expected<T, Error> read_scalar() {
-    if (pos + sizeof(T) > size) return std::unexpected(eof(sizeof(T)));
-    T value;
-    std::memcpy(&value, base + pos, sizeof(T));
-    pos += sizeof(T);
-    return value;
-  }
-  std::expected<std::string, Error> read_string() {
-    auto len = TRY(read_scalar<std::uint64_t>());
-    if (len > size - pos) return std::unexpected(eof(len));
-    std::string s(reinterpret_cast<const char*>(base + pos), static_cast<std::size_t>(len));
-    pos += len;
-    return s;
-  }
-};
-
-bool meta_type_in_range(std::uint32_t v) {
-  return v <= static_cast<std::uint32_t>(MetaType::Float64);
-}
-
-template <typename T>
-std::expected<MetaValue, Error> read_scalar_meta(Cursor& c) {
-  return MetaValue{TRY(c.read_scalar<T>())};
-}
-
-std::expected<MetaValue, Error> read_meta_value(Cursor& c, MetaType type) {
-  switch (type) {
-    case MetaType::UInt8:
-      return read_scalar_meta<std::uint8_t>(c);
-    case MetaType::Int8:
-      return read_scalar_meta<std::int8_t>(c);
-    case MetaType::UInt16:
-      return read_scalar_meta<std::uint16_t>(c);
-    case MetaType::Int16:
-      return read_scalar_meta<std::int16_t>(c);
-    case MetaType::UInt32:
-      return read_scalar_meta<std::uint32_t>(c);
-    case MetaType::Int32:
-      return read_scalar_meta<std::int32_t>(c);
-    case MetaType::Float32:
-      return read_scalar_meta<float>(c);
-    case MetaType::UInt64:
-      return read_scalar_meta<std::uint64_t>(c);
-    case MetaType::Int64:
-      return read_scalar_meta<std::int64_t>(c);
-    case MetaType::Float64:
-      return read_scalar_meta<double>(c);
-    case MetaType::Bool:
-      return MetaValue{TRY(c.read_scalar<std::uint8_t>()) != 0};
-    case MetaType::String:
-      return MetaValue{TRY(c.read_string())};
-    case MetaType::Array: {
-      const std::uint64_t at = c.pos;
-      auto elem_raw = TRY(c.read_scalar<std::uint32_t>());
-      if (!meta_type_in_range(elem_raw) || elem_raw == static_cast<std::uint32_t>(MetaType::Array))
-        return std::unexpected(
-            Error{"bad array element type " + std::to_string(elem_raw), c.path, at});
-      const auto elem_type = static_cast<MetaType>(elem_raw);
-      auto count = TRY(c.read_scalar<std::uint64_t>());
-      if (count > c.size - c.pos)
-        return std::unexpected(Error{"array count exceeds remaining bytes", c.path, c.pos});
-      MetaArray arr;
-      arr.elem_type = elem_type;
-      arr.values.reserve(static_cast<std::size_t>(count));
-      for (std::uint64_t i = 0; i < count; ++i)
-        arr.values.push_back(TRY(read_meta_value(c, elem_type)));
-      return MetaValue{std::move(arr)};
-    }
-  }
-  return std::unexpected(Error{"unknown metadata type", c.path, c.pos});
-}
 
 struct Header {
   std::uint32_t alignment;
@@ -497,35 +476,32 @@ std::expected<Record, Error> read_record(const std::byte* base, std::uint64_t si
   return r;
 }
 
-std::expected<GgufFile, Error> read_impl(std::string_view path_view, const ReadOptions& opts) {
-  const std::string path(path_view);
-  GgufFile file;
-  file.mapping = TRY(MappedFile::open(path_view));
-  const std::byte* base = file.mapping.data();
-  const std::uint64_t size = file.mapping.size();
-
-  const Header h = TRY(read_header(base, size, path));
-  file.version = kVersion;
-  file.alignment = h.alignment;
-
+std::expected<std::vector<std::pair<std::string, MetaValue>>, Error> read_metadata_section(
+    const std::byte* base, const Header& h, const std::string& path) {
   Cursor mc{base, h.metadata_offset + h.metadata_size, path, h.metadata_offset};
-  file.metadata.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(h.metadata_count, 1024)));
+  std::vector<std::pair<std::string, MetaValue>> metadata;
+  metadata.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(h.metadata_count, 1024)));
   for (std::uint64_t i = 0; i < h.metadata_count; ++i) {
     auto key = TRY(mc.read_string());
     const auto type_raw = TRY(mc.read_scalar<std::uint32_t>());
-    if (!meta_type_in_range(type_raw))
+    if (!gguf::detail::meta_type_in_range(type_raw))
       return std::unexpected(Error{"metadata type out of range for '" + key + "'", path, mc.pos});
-    auto value = TRY(read_meta_value(mc, static_cast<MetaType>(type_raw)));
-    file.metadata.emplace_back(std::move(key), std::move(value));
+    auto value = TRY(gguf::detail::read_meta_value(mc, static_cast<MetaType>(type_raw)));
+    metadata.emplace_back(std::move(key), std::move(value));
   }
+  return metadata;
+}
 
-  std::vector<Record> records;
-  records.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(h.tensor_count, 65536)));
-  for (std::uint64_t i = 0; i < h.tensor_count; ++i)
-    records.push_back(TRY(read_record(base, size, h, i, path)));
+struct DecodedAux {
+  MappedFile aux;
+  std::map<std::uint64_t, const std::byte*> comp_ptr;
+};
 
-  // decode compressed tensors once into a single anonymous mapping, unique by
-  // data offset so deduplicated tensors decode only once.
+// decode compressed tensors once into a single anonymous mapping, unique by
+// data offset so deduplicated tensors decode only once.
+std::expected<DecodedAux, Error> decode_compressed_tensors(const std::byte* base,
+                                                           const std::vector<Record>& records,
+                                                           const std::string& path) {
   struct CompInfo {
     std::uint64_t logical;
     std::uint64_t stored;
@@ -538,23 +514,29 @@ std::expected<GgufFile, Error> read_impl(std::string_view path_view, const ReadO
   std::uint64_t aux_size = 0;
   for (const auto& [off, ci] : comp) aux_size += ci.logical;
 
-  std::map<std::uint64_t, const std::byte*> comp_ptr;
-  if (aux_size > 0) {
-    file.aux = TRY(MappedFile::anonymous(static_cast<std::size_t>(aux_size)));
-    std::byte* cursor = file.aux.data_mut();
-    for (const auto& [off, ci] : comp) {
-      std::span<const std::byte> blob{base + off, static_cast<std::size_t>(ci.stored)};
-      std::span<std::byte> out{cursor, static_cast<std::size_t>(ci.logical)};
-      TRY(decompress_f16(blob, out));
-      if (xxhash64(cursor, static_cast<std::size_t>(ci.logical)) != ci.xxh)
-        return std::unexpected(Error{
-            "decoded tensor at offset " + std::to_string(off) + " fails its checksum", path, off});
-      comp_ptr.emplace(off, cursor);
-      cursor += ci.logical;
-    }
+  DecodedAux out;
+  if (aux_size == 0) return out;
+  out.aux = TRY(MappedFile::anonymous(static_cast<std::size_t>(aux_size)));
+  std::byte* cursor = out.aux.data_mut();
+  for (const auto& [off, ci] : comp) {
+    std::span<const std::byte> blob{base + off, static_cast<std::size_t>(ci.stored)};
+    std::span<std::byte> dst{cursor, static_cast<std::size_t>(ci.logical)};
+    TRY(decompress_f16(blob, dst));
+    if (xxhash64(cursor, static_cast<std::size_t>(ci.logical)) != ci.xxh)
+      return std::unexpected(Error{
+          "decoded tensor at offset " + std::to_string(off) + " fails its checksum", path, off});
+    out.comp_ptr.emplace(off, cursor);
+    cursor += ci.logical;
   }
+  return out;
+}
 
-  file.tensors.reserve(records.size());
+std::expected<std::vector<TensorInfo>, Error> build_tensors(
+    const std::byte* base, const std::vector<Record>& records,
+    const std::map<std::uint64_t, const std::byte*>& comp_ptr, const ReadOptions& opts,
+    const std::string& path) {
+  std::vector<TensorInfo> tensors;
+  tensors.reserve(records.size());
   for (const Record& r : records) {
     TensorInfo info;
     info.name = r.name;
@@ -572,8 +554,33 @@ std::expected<GgufFile, Error> read_impl(std::string_view path_view, const ReadO
         return std::unexpected(
             Error{"tensor '" + r.name + "' fails its checksum", path, r.data_offset});
     }
-    file.tensors.push_back(std::move(info));
+    tensors.push_back(std::move(info));
   }
+  return tensors;
+}
+
+std::expected<GgufFile, Error> read_impl(std::string_view path_view, const ReadOptions& opts) {
+  const std::string path(path_view);
+  GgufFile file;
+  file.mapping = TRY(MappedFile::open(path_view));
+  const std::byte* base = file.mapping.data();
+  const std::uint64_t size = file.mapping.size();
+
+  const Header h = TRY(read_header(base, size, path));
+  file.version = kVersion;
+  file.alignment = h.alignment;
+
+  file.metadata = TRY(read_metadata_section(base, h, path));
+
+  std::vector<Record> records;
+  records.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(h.tensor_count, 65536)));
+  for (std::uint64_t i = 0; i < h.tensor_count; ++i)
+    records.push_back(TRY(read_record(base, size, h, i, path)));
+
+  DecodedAux aux = TRY(decode_compressed_tensors(base, records, path));
+  file.aux = std::move(aux.aux);
+
+  file.tensors = TRY(build_tensors(base, records, aux.comp_ptr, opts, path));
   return file;
 }
 
