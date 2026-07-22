@@ -12,8 +12,8 @@ namespace dbinfer::tensor {
 
 namespace {
 
-// one hint to the core that we are in a wait loop. keeps the worker hot for the
-// microseconds between two decode barriers without holding a real lock.
+// hint to the core inside a wait loop. keeps a worker hot between decode
+// barriers without a lock.
 inline void cpu_relax() {
 #if defined(__aarch64__) || defined(__arm__)
   asm volatile("yield" ::: "memory");

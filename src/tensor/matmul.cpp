@@ -19,6 +19,8 @@
 
 namespace dbinfer::tensor {
 
+using gguf::GgmlType;
+
 namespace {
 
 // activations quantize once per matvec, reused across every output row.
@@ -218,9 +220,7 @@ constexpr std::size_t kRowTile = 2;
 
 // only Q8_0/Q4_0 dot against a pre-quantized activation; every other dtype
 // reads the fp32 x directly.
-bool needs_activation_quant(gguf::GgmlType t) {
-  return t == gguf::GgmlType::Q8_0 || t == gguf::GgmlType::Q4_0;
-}
+bool needs_activation_quant(GgmlType t) { return t == GgmlType::Q8_0 || t == GgmlType::Q4_0; }
 
 // compute rows [lo, hi) of weight w (shape [*, in]) into y[lo..hi), re-basing
 // the weight pointer so each kernel call sees a contiguous [0, hi-lo) block.
@@ -230,29 +230,29 @@ void matvec_rows(QuantMatrix w, const float* x, const BlockQ8_0* xq, float* y, s
   if (lo >= hi) return;
   const std::size_t rows = hi - lo;
   switch (w.type) {
-    case gguf::GgmlType::Q8_0:
-    case gguf::GgmlType::Q4_0: {
-      const bool q8 = w.type == gguf::GgmlType::Q8_0;
+    case GgmlType::Q8_0:
+    case GgmlType::Q4_0: {
+      const bool q8 = w.type == GgmlType::Q8_0;
       const std::size_t row_bytes =
           (in / kBlockSize) * (q8 ? sizeof(BlockQ8_0) : sizeof(BlockQ4_0));
       const QuantDispatch& d = quant_dispatch();
       (q8 ? d.q8 : d.q4)(w.data + lo * row_bytes, xq, y + lo, rows, in);
       return;
     }
-    case gguf::GgmlType::Q5_0: {
+    case GgmlType::Q5_0: {
       const std::size_t row_bytes = (in / kBlockSize) * sizeof(BlockQ5_0);
       matvec_q5_0_scalar(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
     }
-    case gguf::GgmlType::Q4_K:
-    case gguf::GgmlType::Q6_K: {
-      const bool q4k = w.type == gguf::GgmlType::Q4_K;
+    case GgmlType::Q4_K:
+    case GgmlType::Q6_K: {
+      const bool q4k = w.type == GgmlType::Q4_K;
       const std::size_t row_bytes =
           (in / kSuperBlockSize) * (q4k ? sizeof(BlockQ4_K) : sizeof(BlockQ6_K));
       (q4k ? matvec_q4_k_scalar : matvec_q6_k_scalar)(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
     }
-    case gguf::GgmlType::F16: {
+    case GgmlType::F16: {
       const std::size_t row_bytes = in * sizeof(std::uint16_t);
       matvec_f16_view(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
@@ -352,7 +352,7 @@ void matmul_f16_batched(const std::uint16_t* W, const float* A, float* C, std::s
 void matmul_quant(QuantMatrix w, const float* A, float* C, std::size_t m, std::size_t out,
                   std::size_t in) {
   // f16 shares one weight read across all m rows, bit-identical to per-row.
-  if (w.type == gguf::GgmlType::F16) {
+  if (w.type == GgmlType::F16) {
     const auto* W = reinterpret_cast<const std::uint16_t*>(w.data);
     // an offload backend (DBINFER_BACKEND=metal) takes the batched f16 matmul.
     // nullptr or a backend error falls back to the CPU kernel with no change.

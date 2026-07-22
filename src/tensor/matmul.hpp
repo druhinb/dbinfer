@@ -13,7 +13,7 @@ namespace dbinfer::tensor {
 void matvec(const float* W, const float* x, float* y, std::size_t out, std::size_t in);
 
 // same as matvec, but W is stored as F16 and dequantized one element at a
-// time in the inner loop rather than converted up front.
+// time in the inner loop.
 void matvec_f16(const std::uint16_t* W, const float* x, float* y, std::size_t out, std::size_t in);
 
 // non-owning view of a weight matrix in the mmap, tagged with its ggml dtype
@@ -22,6 +22,16 @@ struct QuantMatrix {
   const std::byte* data;
   gguf::GgmlType type;
 };
+
+struct BlockQ8_0;
+
+// scalar reference matvec over pre-quantized Q8_0 activations xq (in/32
+// blocks), one weight dtype per function. the 1e-6 reference the neon
+// sdot/i8mm kernels in matmul_neon.hpp match.
+void matvec_q8_0_scalar(const std::byte* W, const BlockQ8_0* xq, float* y, std::size_t out,
+                        std::size_t in);
+void matvec_q4_0_scalar(const std::byte* W, const BlockQ8_0* xq, float* y, std::size_t out,
+                        std::size_t in);
 
 // same as matvec, but W is Q8_0-packed row-major [out, in], dequantized one
 // block at a time in the inner loop. in must be a multiple of 32.
@@ -54,7 +64,7 @@ struct MatvecJob {
 };
 
 // several independent matvecs that share x and in (e.g. the Q/K/V or gate/up
-// projections), run under a single thread-pool barrier instead of one each.
+// projections), run under a single thread-pool barrier for the whole group.
 // x is quantized at most once. Bitwise-identical to calling matvec_quant per
 // job; only the parallelization boundary changes.
 void matvec_quant_fused(const MatvecJob* jobs, std::size_t njobs, const float* x, std::size_t in);

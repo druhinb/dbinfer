@@ -9,6 +9,8 @@
 
 namespace dbinfer::tensor {
 
+using gguf::GgmlType;
+
 float f16_to_f32(std::uint16_t h) {
   // IEEE half: [sign:1][exp:5][mant:10], bias 15. Reconstruct by exponent case:
   // exp==0 -> ±0 (mant 0) or subnormal mant*2^-24; exp==31 -> ±inf (mant 0) or
@@ -216,31 +218,31 @@ void dequant_row_q6_k(const std::byte* block_base, std::size_t in, float* out) {
 
 void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float* out) {
   switch (w.type) {
-    case gguf::GgmlType::F32: {
+    case GgmlType::F32: {
       // tensor data is aligned to the gguf tensor alignment, so a float view is
       // well-defined here.
       const float* r = reinterpret_cast<const float*>(w.data) + row * in;
       std::copy(r, r + in, out);
       return;
     }
-    case gguf::GgmlType::F16: {
+    case GgmlType::F16: {
       const std::uint16_t* r = reinterpret_cast<const std::uint16_t*>(w.data) + row * in;
       for (std::size_t i = 0; i < in; ++i) out[i] = f16_to_f32(r[i]);
       return;
     }
-    case gguf::GgmlType::Q8_0:
+    case GgmlType::Q8_0:
       dequant_row_q8_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ8_0), in, out);
       return;
-    case gguf::GgmlType::Q4_0:
+    case GgmlType::Q4_0:
       dequant_row_q4_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ4_0), in, out);
       return;
-    case gguf::GgmlType::Q5_0:
+    case GgmlType::Q5_0:
       dequant_row_q5_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ5_0), in, out);
       return;
-    case gguf::GgmlType::Q4_K:
+    case GgmlType::Q4_K:
       dequant_row_q4_k(w.data + row * (in / kSuperBlockSize) * sizeof(BlockQ4_K), in, out);
       return;
-    case gguf::GgmlType::Q6_K:
+    case GgmlType::Q6_K:
       dequant_row_q6_k(w.data + row * (in / kSuperBlockSize) * sizeof(BlockQ6_K), in, out);
       return;
     default:
