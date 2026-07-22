@@ -577,30 +577,42 @@ std::size_t weight_bytes(WeightType t, std::size_t out, std::size_t in) {
   return 0;
 }
 
+// the compiled decode kernels, named so build_backend fills them by designated
+// initializer and the ordering can never desync from the constructor.
+struct Pipelines {
+  id<MTLComputePipelineState> mul_mat = nil;
+  id<MTLComputePipelineState> rmsnorm = nil;
+  id<MTLComputePipelineState> rope = nil;
+  id<MTLComputePipelineState> attention = nil;
+  id<MTLComputePipelineState> add_inplace = nil;
+  id<MTLComputePipelineState> swiglu = nil;
+  id<MTLComputePipelineState> quant_q8 = nil;
+  id<MTLComputePipelineState> mul_mat_q8 = nil;
+  id<MTLComputePipelineState> mul_mat_q4 = nil;
+  id<MTLComputePipelineState> mul_mat_g3 = nil;
+  id<MTLComputePipelineState> mul_mat_q8_g3 = nil;
+  id<MTLComputePipelineState> mul_mat_q4_g3 = nil;
+  id<MTLComputePipelineState> gemm = nil;
+};
+
 class MetalBackend final : public Backend {
  public:
-  MetalBackend(id<MTLDevice> device, id<MTLCommandQueue> queue, id<MTLComputePipelineState> mul_mat,
-               id<MTLComputePipelineState> rmsnorm, id<MTLComputePipelineState> rope,
-               id<MTLComputePipelineState> attention, id<MTLComputePipelineState> add_inplace,
-               id<MTLComputePipelineState> swiglu, id<MTLComputePipelineState> quant_q8,
-               id<MTLComputePipelineState> mul_mat_q8, id<MTLComputePipelineState> mul_mat_q4,
-               id<MTLComputePipelineState> mul_mat_g3, id<MTLComputePipelineState> mul_mat_q8_g3,
-               id<MTLComputePipelineState> mul_mat_q4_g3, id<MTLComputePipelineState> gemm)
+  MetalBackend(id<MTLDevice> device, id<MTLCommandQueue> queue, const Pipelines& p)
       : device_(device),
         queue_(queue),
-        mul_mat_(mul_mat),
-        rmsnorm_(rmsnorm),
-        rope_(rope),
-        attention_(attention),
-        add_inplace_(add_inplace),
-        swiglu_(swiglu),
-        quant_q8_(quant_q8),
-        mul_mat_q8_(mul_mat_q8),
-        mul_mat_q4_(mul_mat_q4),
-        mul_mat_g3_(mul_mat_g3),
-        mul_mat_q8_g3_(mul_mat_q8_g3),
-        mul_mat_q4_g3_(mul_mat_q4_g3),
-        gemm_(gemm) {}
+        mul_mat_(p.mul_mat),
+        rmsnorm_(p.rmsnorm),
+        rope_(p.rope),
+        attention_(p.attention),
+        add_inplace_(p.add_inplace),
+        swiglu_(p.swiglu),
+        quant_q8_(p.quant_q8),
+        mul_mat_q8_(p.mul_mat_q8),
+        mul_mat_q4_(p.mul_mat_q4),
+        mul_mat_g3_(p.mul_mat_g3),
+        mul_mat_q8_g3_(p.mul_mat_q8_g3),
+        mul_mat_q4_g3_(p.mul_mat_q4_g3),
+        gemm_(p.gemm) {}
 
   [[nodiscard]] std::expected<void, Error> mul_mat_f16(const std::uint16_t* W, const float* A,
                                                        float* C, std::size_t m, std::size_t out,
@@ -619,14 +631,12 @@ class MetalBackend final : public Backend {
       if (buf_a == nil || buf_c == nil)
         return std::unexpected(Error{"metal: failed to allocate activation buffer"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_mul_mat(enc, buf_w, 0, buf_a, buf_c, m, out, in);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: command buffer did not complete"});
+      if (auto e = submit("metal: command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_mul_mat(enc, buf_w, 0, buf_a, buf_c, m, out, in);
+                          });
+          !e)
+        return e;
 
       std::memcpy(C, buf_c.contents, c_bytes);
     }
@@ -644,14 +654,12 @@ class MetalBackend final : public Backend {
       if (buf_a == nil || buf_q == nil)
         return std::unexpected(Error{"metal: quantize buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_quant_q8(enc, buf_a, buf_q, rows, nblocks);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: quantize command buffer did not complete"});
+      if (auto e = submit("metal: quantize command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_quant_q8(enc, buf_a, buf_q, rows, nblocks);
+                          });
+          !e)
+        return e;
 
       std::memcpy(out, buf_q.contents, q_bytes);
     }
@@ -700,17 +708,20 @@ class MetalBackend final : public Backend {
       if (buf_a == nil)
         return std::unexpected(Error{"metal: mul_mat_group activation buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      if (type != WeightType::F16) encode_quant_q8(enc, buf_a, buf_aq, 1, in / 32);
+      const GpuWeight& w0 = w[0];
+      const GpuWeight& w1 = w[1];
       const GpuWeight* w2 = g == 3 ? &w[2] : nullptr;
+      id<MTLBuffer> c0 = cbuf[0];
+      id<MTLBuffer> c1 = cbuf[1];
       id<MTLBuffer> c2 = g == 3 ? cbuf[2] : nil;
-      encode_group(enc, w[0], w[1], w2, buf_a, buf_aq, cbuf[0], 0, cbuf[1], 0, c2, 0);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: mul_mat_group command buffer did not complete"});
+      if (auto e = submit("metal: mul_mat_group command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            if (type != WeightType::F16)
+                              encode_quant_q8(enc, buf_a, buf_aq, 1, in / 32);
+                            encode_group(enc, w0, w1, w2, buf_a, buf_aq, c0, 0, c1, 0, c2, 0);
+                          });
+          !e)
+        return e;
 
       for (std::size_t i = 0; i < g; ++i)
         std::memcpy(C[i], cbuf[i].contents, outs[i] * sizeof(float));
@@ -744,21 +755,19 @@ class MetalBackend final : public Backend {
 
       const GemmDims d{static_cast<std::uint32_t>(mp), static_cast<std::uint32_t>(np),
                        static_cast<std::uint32_t>(kp)};
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      [enc setComputePipelineState:gemm_];
-      [enc setBuffer:buf_a offset:0 atIndex:0];
-      [enc setBuffer:buf_w offset:0 atIndex:1];
-      [enc setBuffer:buf_c offset:0 atIndex:2];
-      [enc setBytes:&d length:sizeof(d) atIndex:3];
-      const MTLSize groups = MTLSizeMake(np / 8, mp / 8, 1);
-      const MTLSize group = MTLSizeMake(32, 1, 1);
-      [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: gemm command buffer did not complete"});
+      if (auto e = submit("metal: gemm command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            [enc setComputePipelineState:gemm_];
+                            [enc setBuffer:buf_a offset:0 atIndex:0];
+                            [enc setBuffer:buf_w offset:0 atIndex:1];
+                            [enc setBuffer:buf_c offset:0 atIndex:2];
+                            [enc setBytes:&d length:sizeof(d) atIndex:3];
+                            const MTLSize groups = MTLSizeMake(np / 8, mp / 8, 1);
+                            const MTLSize group = MTLSizeMake(32, 1, 1);
+                            [enc dispatchThreadgroups:groups threadsPerThreadgroup:group];
+                          });
+          !e)
+        return e;
 
       const float* cp = static_cast<const float*>(buf_c.contents);
       for (std::size_t r = 0; r < m; ++r)
@@ -778,14 +787,12 @@ class MetalBackend final : public Backend {
       if (buf_x == nil || buf_w == nil || buf_o == nil)
         return std::unexpected(Error{"metal: rmsnorm buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_rmsnorm(enc, buf_x, 0, buf_w, buf_o, 0, rows, dim, eps);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: rmsnorm command buffer did not complete"});
+      if (auto e = submit("metal: rmsnorm command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_rmsnorm(enc, buf_x, 0, buf_w, buf_o, 0, rows, dim, eps);
+                          });
+          !e)
+        return e;
 
       std::memcpy(out, buf_o.contents, n * sizeof(float));
     }
@@ -802,14 +809,12 @@ class MetalBackend final : public Backend {
       if (buf_x == nil || buf_p == nil)
         return std::unexpected(Error{"metal: rope buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_rope(enc, buf_x, 0, buf_p, theta, n_heads, seq, head_dim);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: rope command buffer did not complete"});
+      if (auto e = submit("metal: rope command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_rope(enc, buf_x, 0, buf_p, theta, n_heads, seq, head_dim);
+                          });
+          !e)
+        return e;
 
       std::memcpy(x, buf_x.contents, n * sizeof(float));
     }
@@ -832,15 +837,13 @@ class MetalBackend final : public Backend {
       if (buf_q == nil || buf_k == nil || buf_v == nil || buf_o == nil || buf_sc == nil)
         return std::unexpected(Error{"metal: attention buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_attention(enc, buf_q, 0, buf_k, 0, buf_v, 0, buf_o, buf_sc, n_positions, n_heads,
-                       n_kv_heads, head_dim);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: attention command buffer did not complete"});
+      if (auto e = submit("metal: attention command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_attention(enc, buf_q, 0, buf_k, 0, buf_v, 0, buf_o, buf_sc,
+                                             n_positions, n_heads, n_kv_heads, head_dim);
+                          });
+          !e)
+        return e;
 
       std::memcpy(out, buf_o.contents, out_n * sizeof(float));
     }
@@ -915,15 +918,13 @@ class MetalBackend final : public Backend {
       const std::uint32_t dim = offload_.front().dim;
       std::memcpy(buf_x_.contents, x, dim * sizeof(float));
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      for (std::size_t l = 0; l < offload_.size(); ++l)
-        encode_layer(enc, offload_[l], l, buf_x_, scratch_, pos);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: decode_token command buffer did not complete"});
+      if (auto e = submit("metal: decode_token command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            for (std::size_t l = 0; l < offload_.size(); ++l)
+                              encode_layer(enc, offload_[l], l, buf_x_, scratch_, pos);
+                          });
+          !e)
+        return e;
 
       std::memcpy(x, buf_x_.contents, dim * sizeof(float));
     }
@@ -940,21 +941,22 @@ class MetalBackend final : public Backend {
       const std::uint32_t dim = offload_.front().dim;
       std::memcpy(buf_x_.contents, x, dim * sizeof(float));
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      for (std::size_t l = 0; l < offload_.size(); ++l)
-        encode_layer(enc, offload_[l], l, buf_x_, scratch_, pos);
-      // final rmsnorm reuses the free per-layer normed scratch, then the lm_head
-      // projection writes logits directly into the shared buffer the CPU reads.
-      encode_rmsnorm(enc, buf_x_, 0, head_norm_, scratch_.normed, 0, 1, dim, offload_.front().eps);
-      if (head_w_.type != WeightType::F16)
-        encode_quant_q8(enc, scratch_.normed, scratch_.normed_q, 1, dim / 32);
-      encode_weight(enc, head_w_, scratch_.normed, scratch_.normed_q, logits_buf_, 0);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: decode_token_full command buffer did not complete"});
+      if (auto e = submit("metal: decode_token_full command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            for (std::size_t l = 0; l < offload_.size(); ++l)
+                              encode_layer(enc, offload_[l], l, buf_x_, scratch_, pos);
+                            // final rmsnorm reuses the free per-layer normed scratch, then the
+                            // lm_head projection writes logits directly into the shared buffer the
+                            // CPU reads.
+                            encode_rmsnorm(enc, buf_x_, 0, head_norm_, scratch_.normed, 0, 1, dim,
+                                           offload_.front().eps);
+                            if (head_w_.type != WeightType::F16)
+                              encode_quant_q8(enc, scratch_.normed, scratch_.normed_q, 1, dim / 32);
+                            encode_weight(enc, head_w_, scratch_.normed, scratch_.normed_q,
+                                          logits_buf_, 0);
+                          });
+          !e)
+        return std::unexpected(e.error());
     }
     return static_cast<const float*>(logits_buf_.contents);
   }
@@ -1086,6 +1088,20 @@ class MetalBackend final : public Backend {
   static bool quant_any(WeightType a, WeightType b) { return quant_any(a) || quant_any(b); }
 
  private:
+  // shared submit and wait. copyback stays per-caller, decode_token_full returns
+  // a device pointer with no host tail.
+  std::expected<void, Error> submit(const char* fail_msg,
+                                    void (^encode)(id<MTLComputeCommandEncoder>)) {
+    id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
+    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+    encode(enc);
+    [enc endEncoding];
+    [cmd commit];
+    [cmd waitUntilCompleted];
+    if (cmd.status != MTLCommandBufferStatusCompleted) return std::unexpected(Error{fail_msg});
+    return {};
+  }
+
   void encode_mul_mat(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> w, std::size_t w_off,
                       id<MTLBuffer> a, id<MTLBuffer> c, std::size_t m, std::size_t out,
                       std::size_t in, std::size_t c_off = 0, bool add_res = false) {
@@ -1122,15 +1138,13 @@ class MetalBackend final : public Backend {
       if (buf_w == nil || buf_a == nil || buf_xq == nil || buf_c == nil)
         return std::unexpected(Error{"metal: quant matvec buffer allocation failed"});
 
-      id<MTLCommandBuffer> cmd = [queue_ commandBuffer];
-      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-      encode_quant_q8(enc, buf_a, buf_xq, m, nblocks);
-      encode_mul_mat_quant(enc, pipe, buf_w, buf_xq, buf_c, m, out, in);
-      [enc endEncoding];
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status != MTLCommandBufferStatusCompleted)
-        return std::unexpected(Error{"metal: quant matvec command buffer did not complete"});
+      if (auto e = submit("metal: quant matvec command buffer did not complete",
+                          ^(id<MTLComputeCommandEncoder> enc) {
+                            encode_quant_q8(enc, buf_a, buf_xq, m, nblocks);
+                            encode_mul_mat_quant(enc, pipe, buf_w, buf_xq, buf_c, m, out, in);
+                          });
+          !e)
+        return e;
 
       std::memcpy(C, buf_c.contents, c_bytes);
     }
@@ -1410,9 +1424,22 @@ std::unique_ptr<MetalBackend> build_backend() {
       std::fprintf(stderr, "metal: gemm shader compile failed: %s\n",
                    gerr.localizedDescription.UTF8String);
 
-    return std::make_unique<MetalBackend>(device, queue, mul_mat, rmsnorm, rope, attention,
-                                          add_inplace, swiglu, quant_q8, mul_mat_q8, mul_mat_q4,
-                                          mul_mat_g3, mul_mat_q8_g3, mul_mat_q4_g3, gemm);
+    const Pipelines pipes{
+        .mul_mat = mul_mat,
+        .rmsnorm = rmsnorm,
+        .rope = rope,
+        .attention = attention,
+        .add_inplace = add_inplace,
+        .swiglu = swiglu,
+        .quant_q8 = quant_q8,
+        .mul_mat_q8 = mul_mat_q8,
+        .mul_mat_q4 = mul_mat_q4,
+        .mul_mat_g3 = mul_mat_g3,
+        .mul_mat_q8_g3 = mul_mat_q8_g3,
+        .mul_mat_q4_g3 = mul_mat_q4_g3,
+        .gemm = gemm,
+    };
+    return std::make_unique<MetalBackend>(device, queue, pipes);
   }
 }
 
