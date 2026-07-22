@@ -31,8 +31,6 @@ std::expected<float, sample::Error> parse_float(std::string_view flag, const cha
   char* end = nullptr;
   float v = std::strtof(val, &end);
   if (end == val || *end != '\0') return std::unexpected(expects_number(flag, val));
-
-  // reject nan, infinite values
   if (errno == ERANGE || !std::isfinite(v)) return std::unexpected(out_of_range(flag, val));
   return v;
 }
@@ -66,9 +64,8 @@ struct FlagSpec {
   Apply apply;
 };
 
-// Captureless lambdas decay to function pointers, so this table stays
-// allocation-free. Each row owns its own parse, range check, and assignment;
-// there is no second validation pass elsewhere.
+// captureless lambdas decay to function pointers so the table stays
+// allocation-free. each row owns its own parse and range check.
 constexpr FlagSpec kFlags[] = {
     {"-m", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
