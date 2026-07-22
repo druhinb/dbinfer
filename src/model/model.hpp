@@ -320,6 +320,24 @@ class Model {
   // falls back to per-layer decode_layer on a backend error.
   void decode_token_gpu(float* x, std::int32_t pos);
 
+  // binds every weight tensor's mmap view into this model after parse_config
+  // has filled cfg_, validating each tensor's shape and dtype against it.
+  [[nodiscard]] std::expected<void, gguf::Error> bind_weights(const gguf::GgufFile& file);
+
+  // self-attention over the keys and values already appended to kv, split by
+  // cache layout. the score, softmax, and weighted-value math repeats across
+  // the three because the fp32, int8, and ring key paths diverge too much to
+  // share one loop. each writes one query head's result into attn_ and passes
+  // scale as 1/sqrt(head_dim).
+  void attend_dense_f32(std::size_t layer, std::int32_t pos, KVCache& kv, float scale,
+                        DebugCapture* dbg);
+  void attend_dense_int8(std::size_t layer, std::int32_t pos, KVCache& kv, float scale,
+                         DebugCapture* dbg);
+  // ring path re-ropes each resident key by its cache-relative position, so it
+  // appends and ropes the query itself.
+  void attend_ring(std::size_t layer, std::int32_t pos, KVCache& kv, float scale,
+                   DebugCapture* dbg);
+
   Config cfg_;
   std::vector<LayerWeights> layers_;
   tensor::QuantMatrix token_embd_{};
