@@ -58,15 +58,15 @@ add_library(dbinfer_tokenizer STATIC
 target_include_directories(dbinfer_tokenizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(dbinfer_tokenizer PUBLIC dbinfer_gguf)
 
+add_library(dbinfer_sample STATIC
+  sample/sample.cpp)
+target_include_directories(dbinfer_sample PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_library(dbinfer_model STATIC
   model/model.cpp
   model/speculative.cpp)
 target_include_directories(dbinfer_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(dbinfer_model PUBLIC dbinfer_gguf dbinfer_tensor dbinfer_tokenizer)
-
-add_library(dbinfer_sample STATIC
-  sample/sample.cpp)
-target_include_directories(dbinfer_sample PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(dbinfer_model PUBLIC dbinfer_gguf dbinfer_tensor dbinfer_tokenizer dbinfer_sample)
 
 add_library(dbinfer_grammar STATIC
   grammar/grammar.cpp)

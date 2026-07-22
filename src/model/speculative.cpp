@@ -3,25 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "sample/sample.hpp"
+
 namespace dbinfer::model {
-
-namespace {
-
-// first-max wins on ties, matching the greedy sampler short-circuit so the
-// speculative stream is bit-identical to spec-off greedy decode.
-std::int32_t argmax(const float* logits, std::size_t n) {
-  std::int32_t best = 0;
-  float bestv = logits[0];
-  for (std::size_t i = 1; i < n; ++i) {
-    if (logits[i] > bestv) {
-      bestv = logits[i];
-      best = static_cast<std::int32_t>(i);
-    }
-  }
-  return best;
-}
-
-}  // namespace
 
 std::size_t speculative_merge(std::span<const std::int32_t> draft,
                               std::span<const std::int32_t> target,
@@ -70,14 +54,15 @@ std::vector<std::int32_t> speculative_generate(Model& target, Model& draft,
     std::int32_t cur = last;
     for (std::size_t i = 0; i < k; ++i) {
       const float* ld = draft.forward(cur, pos + static_cast<std::int32_t>(i));
-      cur = argmax(ld, vocab);
+      cur = sample::argmax(ld, vocab);
       proposals[i] = cur;
     }
 
     inputs[0] = last;
     for (std::size_t i = 0; i < k; ++i) inputs[i + 1] = proposals[i];
     target.forward_chunk(inputs.data(), pos, k + 1, chunk.data());
-    for (std::size_t i = 0; i <= k; ++i) verified[i] = argmax(chunk.data() + i * vocab, vocab);
+    for (std::size_t i = 0; i <= k; ++i)
+      verified[i] = sample::argmax(chunk.data() + i * vocab, vocab);
 
     merged.clear();
     const std::size_t accepted =

@@ -6,16 +6,25 @@
 
 namespace dbinfer::sample {
 
-std::int32_t argmax(const float* logits, std::size_t n) {
+namespace {
+// first-max wins: strict > so an equal later candidate never displaces best.
+template <class T, class Proj>
+std::int32_t argmax_by(std::span<const T> c, Proj proj) {
   std::int32_t best = 0;
-  float bestv = logits[0];
-  for (std::size_t i = 1; i < n; ++i) {
-    if (logits[i] > bestv) {
-      bestv = logits[i];
+  float bestv = proj(c[0]);
+  for (std::size_t i = 1; i < c.size(); ++i) {
+    const float v = proj(c[i]);
+    if (v > bestv) {
+      bestv = v;
       best = static_cast<std::int32_t>(i);
     }
   }
   return best;
+}
+}  // namespace
+
+std::int32_t argmax(const float* logits, std::size_t n) {
+  return argmax_by(std::span<const float>(logits, n), [](float x) { return x; });
 }
 
 std::expected<void, Error> validate(const SamplerParams& p) {
@@ -34,8 +43,7 @@ void apply_penalties(std::span<Candidate> c, std::span<const std::int32_t> recen
   for (const auto& [id, count] : counts) {
     if (id < 0 || static_cast<std::size_t>(id) >= c.size()) continue;
     float& logit = c[static_cast<std::size_t>(id)].logit;
-    // positive logits shrink toward zero, negative ones
-    // grow more negative; the multily branch keeps a zero logit at zero.
+    // positive logit divided, negative logit multiplied, zero stays zero.
     if (logit > 0.0f)
       logit /= repeat_penalty;
     else
@@ -138,15 +146,8 @@ std::int32_t Sampler::sample(const float* logits, std::size_t n,
                   params_.presence_penalty);
 
   if (params_.temperature == 0.0f) {
-    std::int32_t best = 0;
-    float bestv = scratch_[0].logit;
-    for (std::size_t i = 1; i < n; ++i) {
-      if (scratch_[i].logit > bestv) {
-        bestv = scratch_[i].logit;
-        best = static_cast<std::int32_t>(i);
-      }
-    }
-    return best;
+    return argmax_by(std::span<const Candidate>(scratch_),
+                     [](const Candidate& x) { return x.logit; });
   }
 
   apply_temperature(scratch_, params_.temperature);
