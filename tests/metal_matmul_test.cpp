@@ -15,10 +15,12 @@
 #include "backend/metal_backend.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::check;
+using dbinfer::test::g_failures;
 
 struct Lcg {
   std::uint64_t s;
@@ -28,11 +30,6 @@ struct Lcg {
     return static_cast<float>(hi) / 2147483648.0f - 1.0f;
   }
 };
-
-void check(bool ok, const char* what) {
-  std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok) ++g_failures;
-}
 
 double run_shape(dbinfer::backend::Backend& metal, std::size_t m, std::size_t out, std::size_t in) {
   Lcg rng{0xC0FFEE ^ (m * 131 + out * 17 + in)};
@@ -78,10 +75,12 @@ void test_zero_copy() {
     check(false, "posix_memalign for zero-copy probe");
     return;
   }
+
   const bool ok_aligned = dbinfer::backend::metal_can_wrap_nocopy(aligned, kBytes);
   auto* bytes = static_cast<std::byte*>(aligned);
   const bool ok_unaligned = dbinfer::backend::metal_can_wrap_nocopy(bytes + 32, kBytes);
   std::free(aligned);
+
   std::printf("  nocopy aligned=%d unaligned=%d\n", ok_aligned, ok_unaligned);
   check(ok_aligned && !ok_unaligned, "zero-copy wraps 16 KiB-aligned weights only");
 }
@@ -107,6 +106,5 @@ int main() {
 
   test_zero_copy();
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

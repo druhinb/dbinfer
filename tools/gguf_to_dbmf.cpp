@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
     else if (out == nullptr)
       out = argv[i];
   }
+
   if (in == nullptr || out == nullptr) {
     std::fprintf(stderr, "usage: %s [--compress] <in.gguf> <out.dbmf>\n", argv[0]);
     return 2;

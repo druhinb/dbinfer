@@ -53,11 +53,11 @@ std::optional<std::string> read_file(const char* path) {
 // per-token negative log-likelihood: max-subtract logsumexp in double, then
 // logsumexp minus the target logit. reduction order is a parity contract
 // with llama.cpp perplexity numbers (VERIFICATION.md); do not reorder.
-double token_nll(const float* logits, std::size_t vocab, std::int32_t target) {
+double token_nll(std::span<const float> logits, std::int32_t target) {
   float max_logit = logits[0];
-  for (std::size_t i = 1; i < vocab; ++i) max_logit = std::max(max_logit, logits[i]);
+  for (std::size_t i = 1; i < logits.size(); ++i) max_logit = std::max(max_logit, logits[i]);
   double sum_exp = 0.0;
-  for (std::size_t i = 0; i < vocab; ++i)
+  for (std::size_t i = 0; i < logits.size(); ++i)
     sum_exp += std::exp(static_cast<double>(logits[i] - max_logit));
   const double logsumexp = static_cast<double>(max_logit) + std::log(sum_exp);
   return logsumexp - static_cast<double>(logits[target]);
@@ -96,7 +96,7 @@ int run_perplexity(Model& model, const Tokenizer& tok, const CliOptions& opts) {
     for (std::size_t j = 0; j < n_ctx; ++j) {
       const float* logits = model.forward(tokens[start + j], static_cast<std::int32_t>(j));
       if (j < score_lo || j + 1 >= n_ctx) continue;
-      nll += token_nll(logits, vocab, tokens[start + j + 1]);
+      nll += token_nll(std::span<const float>(logits, vocab), tokens[start + j + 1]);
       ++count;
     }
     std::fprintf(stderr, "chunk %zu/%zu ppl %.4f\n", w + 1, n_chunk,
@@ -139,7 +139,7 @@ int run_stream_perplexity(Model& model, const Tokenizer& tok, const CliOptions& 
   std::size_t count = 0;
   for (std::size_t j = 0; j + 1 < limit; ++j) {
     const float* logits = model.forward(tokens[j], static_cast<std::int32_t>(j));
-    const double tnll = token_nll(logits, vocab, tokens[j + 1]);
+    const double tnll = token_nll(std::span<const float>(logits, vocab), tokens[j + 1]);
 
     const std::size_t b = j / bucket_size;
     if (b >= bucket_nll.size()) {
@@ -237,59 +237,49 @@ int setup_gpu_offload(Model& model, const CliOptions& opts) {
     std::fprintf(stderr, "error: --gpu-layers needs a Metal device\n");
     return 1;
   }
+
   if (opts.kv_window > 0 || opts.kv_int8) {
     std::fprintf(stderr, "error: --gpu-layers requires the dense fp32 cache\n");
     return 1;
   }
+
   const std::size_t n =
       std::min<std::size_t>(static_cast<std::size_t>(gpu_layers), model.config().n_layers);
   if (!model.layers_offloadable(n)) {
     std::fprintf(stderr, "error: --gpu-layers requires F16, Q8_0, or Q4_0 weights\n");
     return 1;
   }
+
   if (!model.set_gpu_offload(be, n)) return 1;
   return 0;
 }
 
-// greedy/sampled generation: tokenizes the prompt, resumes from a loaded kv
-// prefix when given, prefills the rest (chunked or per-token), optionally
-// saves the prefix cache and applies a grammar, then decodes until eos or
-// the -n budget runs out.
-int run_generate(Model& model, const Tokenizer& tok, const CliOptions& opts) {
-  std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
-  if (history.empty()) {
-    std::fprintf(stderr, "error: prompt tokenized to zero tokens\n");
-    return 1;
+// returns the first prompt index still needing prefill, 0 when none loaded
+std::optional<std::size_t> resume_kv_prefix(Model& model, const CliOptions& opts,
+                                            const std::vector<std::int32_t>& history) {
+  if (opts.kv_cache_load.empty()) return std::size_t{0};
+
+  auto loaded_prefix = model.load_kv_prefix(opts.kv_cache_load, history);
+  if (!loaded_prefix) {
+    std::fprintf(stderr, "error: kv cache load: %s\n", to_string(loaded_prefix.error()).c_str());
+    return std::nullopt;
   }
+  if (*loaded_prefix >= history.size()) {
+    std::fprintf(stderr, "error: loaded prefix covers the whole prompt; extend the prompt\n");
+    return std::nullopt;
+  }
+  return *loaded_prefix;
+}
 
-  dbinfer::sample::Sampler sampler(opts.params);
-
+// returns the final token's logits. chunk_logits may back that pointer and
+// must outlive it.
+const float* prefill_prompt(Model& model, const CliOptions& opts,
+                            const std::vector<std::int32_t>& history, std::size_t prefill_start,
+                            std::int32_t& pos, std::vector<float>& chunk_logits) {
   const std::size_t vocab = model.config().vocab_size;
-  std::int32_t pos = 0;
+  const std::size_t chunk = static_cast<std::size_t>(opts.prefill_chunk);
   const float* logits = nullptr;
 
-  std::size_t prefill_start = 0;
-  if (!opts.kv_cache_load.empty()) {
-    auto loaded_prefix = model.load_kv_prefix(opts.kv_cache_load, history);
-    if (!loaded_prefix) {
-      std::fprintf(stderr, "error: kv cache load: %s\n", to_string(loaded_prefix.error()).c_str());
-      return 1;
-    }
-    prefill_start = *loaded_prefix;
-    pos = static_cast<std::int32_t>(prefill_start);
-    if (prefill_start >= history.size()) {
-      std::fprintf(stderr, "error: loaded prefix covers the whole prompt; extend the prompt\n");
-      return 1;
-    }
-  }
-
-  // prefill: run the prompt through the model so the KV cache is populated for
-  // every prompt position; only the final token's logits are kept, to pick the
-  // first generated token from. a loaded prefix already holds positions
-  // [0, prefill_start), so decode resumes from there. --prefill-chunk > 1
-  // processes fixed-size chunks together on the dense fp32 cache.
-  const std::size_t chunk = static_cast<std::size_t>(opts.prefill_chunk);
-  std::vector<float> chunk_logits;
   if (chunk > 1 && model.kv_dense_f32()) {
     chunk_logits.resize(chunk * vocab);
     for (std::size_t i = prefill_start; i < history.size(); i += chunk) {
@@ -302,54 +292,68 @@ int run_generate(Model& model, const Tokenizer& tok, const CliOptions& opts) {
     for (std::size_t i = prefill_start; i < history.size(); ++i)
       logits = model.forward(history[i], pos++);
   }
+  return logits;
+}
 
-  if (!opts.kv_cache_save.empty()) {
-    auto saved = model.save_kv_prefix(
-        opts.kv_cache_save, std::span<const std::int32_t>(history.data(), history.size()));
-    if (!saved) {
-      std::fprintf(stderr, "error: kv cache save: %s\n", to_string(saved.error()).c_str());
-      return 1;
-    }
+// requires the whole prompt already prefilled, a no-op without --kv-cache-save
+int save_kv_prefix_if_requested(Model& model, const CliOptions& opts,
+                                const std::vector<std::int32_t>& history) {
+  if (opts.kv_cache_save.empty()) return 0;
+
+  auto saved = model.save_kv_prefix(opts.kv_cache_save,
+                                    std::span<const std::int32_t>(history.data(), history.size()));
+  if (!saved) {
+    std::fprintf(stderr, "error: kv cache save: %s\n", to_string(saved.error()).c_str());
+    return 1;
+  }
+  return 0;
+}
+
+// sizes masked to hold one logits copy, a no-op without --grammar
+int build_grammar_matcher(const CliOptions& opts, const Tokenizer& tok, std::size_t vocab,
+                          std::int32_t eos, std::optional<dbinfer::grammar::Matcher>& matcher,
+                          std::vector<float>& masked) {
+  if (opts.grammar_path.empty()) return 0;
+
+  auto gtext = read_file(opts.grammar_path.c_str());
+  if (!gtext) {
+    std::fprintf(stderr, "error: cannot read grammar %s\n", opts.grammar_path.c_str());
+    return 1;
   }
 
-  const std::int32_t eos = tok.eos_id();
-
-  std::optional<dbinfer::grammar::Matcher> matcher;
-  std::vector<float> masked;
-  if (!opts.grammar_path.empty()) {
-    auto gtext = read_file(opts.grammar_path.c_str());
-    if (!gtext) {
-      std::fprintf(stderr, "error: cannot read grammar %s\n", opts.grammar_path.c_str());
-      return 1;
-    }
-    auto grammar = dbinfer::grammar::Grammar::parse(*gtext);
-    if (!grammar) {
-      std::fprintf(stderr, "error: grammar: %s\n", grammar.error().message.c_str());
-      return 1;
-    }
-    std::vector<std::string> token_bytes(vocab);
-    for (std::size_t id = 0; id < vocab; ++id) {
-      const std::int32_t one[1] = {static_cast<std::int32_t>(id)};
-      token_bytes[id] = tok.decode(std::span<const std::int32_t>(one, 1));
-    }
-    matcher.emplace(std::move(*grammar), std::move(token_bytes), eos);
-    masked.resize(vocab);
+  auto grammar = dbinfer::grammar::Grammar::parse(*gtext);
+  if (!grammar) {
+    std::fprintf(stderr, "error: grammar: %s\n", grammar.error().message.c_str());
+    return 1;
   }
 
-  // decode: sample one token from the current logits, then feed it back in
-  // to get the next position's logits, until eos or the -n budget runs out.
-  // a grammar, when present, masks disallowed tokens to -inf before sampling
-  // and then advances on the chosen token.
+  std::vector<std::string> token_bytes(vocab);
+  for (std::size_t id = 0; id < vocab; ++id) {
+    const std::int32_t one[1] = {static_cast<std::int32_t>(id)};
+    token_bytes[id] = tok.decode(std::span<const std::int32_t>(one, 1));
+  }
+  matcher.emplace(std::move(*grammar), std::move(token_bytes), eos);
+  masked.resize(vocab);
+  return 0;
+}
+
+// repeats until eos or the -n budget runs out
+int decode_loop(Model& model, const Tokenizer& tok, const CliOptions& opts,
+                dbinfer::sample::Sampler& sampler, std::vector<std::int32_t>& history,
+                std::optional<dbinfer::grammar::Matcher>& matcher, std::vector<float>& masked,
+                std::int32_t eos, std::size_t vocab, std::int32_t pos, const float* logits) {
   for (int t = 0; t < opts.n; ++t) {
     if (matcher) {
       std::copy(logits, logits + vocab, masked.begin());
       matcher->mask(masked);
       logits = masked.data();
     }
+
     std::int32_t next_tok = sampler.sample(logits, vocab, history);
     if (next_tok == eos) break;
     if (matcher) matcher->accept(next_tok);
     history.push_back(next_tok);
+
     if (opts.print_ids) {
       std::printf("%d\n", next_tok);
     } else {
@@ -358,12 +362,45 @@ int run_generate(Model& model, const Tokenizer& tok, const CliOptions& opts) {
       std::fputs(piece.c_str(), stdout);
       std::fflush(stdout);
     }
+
     if (matcher && opts.grammar_stop && matcher->complete()) break;
     logits = model.forward(next_tok, pos++);
   }
   if (!opts.print_ids) std::fputc('\n', stdout);
-
   return 0;
+}
+
+// greedy/sampled generation: tokenizes the prompt, then runs prefix resume,
+// prefill, grammar setup, and the decode loop in order.
+int run_generate(Model& model, const Tokenizer& tok, const CliOptions& opts) {
+  std::vector<std::int32_t> history = tok.encode(opts.prompt, /*add_special=*/false);
+  if (history.empty()) {
+    std::fprintf(stderr, "error: prompt tokenized to zero tokens\n");
+    return 1;
+  }
+
+  dbinfer::sample::Sampler sampler(opts.params);
+  const std::size_t vocab = model.config().vocab_size;
+
+  auto prefill_start = resume_kv_prefix(model, opts, history);
+  if (!prefill_start) return 1;
+  std::int32_t pos = static_cast<std::int32_t>(*prefill_start);
+
+  std::vector<float> chunk_logits;
+  const float* logits = prefill_prompt(model, opts, history, *prefill_start, pos, chunk_logits);
+
+  if (int err = save_kv_prefix_if_requested(model, opts, history); err != 0) {
+    return err;
+  }
+
+  const std::int32_t eos = tok.eos_id();
+  std::optional<dbinfer::grammar::Matcher> matcher;
+  std::vector<float> masked;
+  if (int err = build_grammar_matcher(opts, tok, vocab, eos, matcher, masked); err != 0) {
+    return err;
+  }
+
+  return decode_loop(model, tok, opts, sampler, history, matcher, masked, eos, vocab, pos, logits);
 }
 
 }  // namespace
@@ -387,6 +424,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "error: load model: %s\n", to_string(mret.error()).c_str());
     return 1;
   }
+
   auto tret = Tokenizer::from_gguf(*loaded);
   if (!tret) {
     std::fprintf(stderr, "error: tokenizer: %s\n", to_string(tret.error()).c_str());

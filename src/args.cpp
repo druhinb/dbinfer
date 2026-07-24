@@ -72,11 +72,13 @@ constexpr FlagSpec kFlags[] = {
        o.model_path = v;
        return {};
      }},
+
     {"-p", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.prompt = v;
        return {};
      }},
+
     {"-n", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -84,6 +86,7 @@ constexpr FlagSpec kFlags[] = {
        o.n = x;
        return {};
      }},
+
     {"--threads", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -91,6 +94,7 @@ constexpr FlagSpec kFlags[] = {
        o.threads = x;
        return {};
      }},
+
     {"--gpu-layers", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -98,6 +102,7 @@ constexpr FlagSpec kFlags[] = {
        o.gpu_layers = x;
        return {};
      }},
+
     {"--temp", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        float x = TRY(parse_float(f, v));
@@ -105,11 +110,13 @@ constexpr FlagSpec kFlags[] = {
        o.params.temperature = x;
        return {};
      }},
+
     {"--top-k", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        o.params.top_k = TRY(parse_int(f, v));
        return {};
      }},
+
     {"--top-p", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        float x = TRY(parse_float(f, v));
@@ -117,6 +124,7 @@ constexpr FlagSpec kFlags[] = {
        o.params.top_p = x;
        return {};
      }},
+
     {"--min-p", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        float x = TRY(parse_float(f, v));
@@ -124,6 +132,7 @@ constexpr FlagSpec kFlags[] = {
        o.params.min_p = x;
        return {};
      }},
+
     {"--repeat-penalty", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        float x = TRY(parse_float(f, v));
@@ -131,36 +140,43 @@ constexpr FlagSpec kFlags[] = {
        o.params.repeat_penalty = x;
        return {};
      }},
+
     {"--freq-penalty", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        o.params.freq_penalty = TRY(parse_float(f, v));
        return {};
      }},
+
     {"--presence-penalty", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        o.params.presence_penalty = TRY(parse_float(f, v));
        return {};
      }},
+
     {"--penalty-last-n", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        o.params.penalty_last_n = TRY(parse_int(f, v));
        return {};
      }},
+
     {"-s", "--seed", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        o.params.seed = TRY(parse_ull(f, v));
        return {};
      }},
+
     {"--print-ids", "", false,
      [](CliOptions& o, std::string_view, const char*) -> std::expected<void, sample::Error> {
        o.print_ids = true;
        return {};
      }},
+
     {"--perplexity", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.perplexity_path = v;
        return {};
      }},
+
     {"--ppl-chunks", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -168,6 +184,7 @@ constexpr FlagSpec kFlags[] = {
        o.ppl_chunks = x;
        return {};
      }},
+
     {"--kv-window", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -175,6 +192,7 @@ constexpr FlagSpec kFlags[] = {
        o.kv_window = x;
        return {};
      }},
+
     {"--kv-sink", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -182,26 +200,31 @@ constexpr FlagSpec kFlags[] = {
        o.kv_sink = x;
        return {};
      }},
+
     {"--ppl-stream", "", false,
      [](CliOptions& o, std::string_view, const char*) -> std::expected<void, sample::Error> {
        o.ppl_stream = true;
        return {};
      }},
+
     {"--kv-int8", "", false,
      [](CliOptions& o, std::string_view, const char*) -> std::expected<void, sample::Error> {
        o.kv_int8 = true;
        return {};
      }},
+
     {"--kv-cache-save", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.kv_cache_save = v;
        return {};
      }},
+
     {"--kv-cache-load", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.kv_cache_load = v;
        return {};
      }},
+
     {"--prefill-chunk", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));
@@ -209,21 +232,25 @@ constexpr FlagSpec kFlags[] = {
        o.prefill_chunk = x;
        return {};
      }},
+
     {"--grammar", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.grammar_path = v;
        return {};
      }},
+
     {"--grammar-stop", "", false,
      [](CliOptions& o, std::string_view, const char*) -> std::expected<void, sample::Error> {
        o.grammar_stop = true;
        return {};
      }},
+
     {"--draft-model", "", true,
      [](CliOptions& o, std::string_view, const char* v) -> std::expected<void, sample::Error> {
        o.draft_model = v;
        return {};
      }},
+
     {"--draft-k", "", true,
      [](CliOptions& o, std::string_view f, const char* v) -> std::expected<void, sample::Error> {
        int x = TRY(parse_int(f, v));

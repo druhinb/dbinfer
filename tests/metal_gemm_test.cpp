@@ -13,10 +13,11 @@
 #include "backend/metal_backend.hpp"
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 struct Lcg {
   std::uint64_t s;
@@ -65,6 +66,7 @@ int main() {
     std::printf("SKIP no Metal device available\n");
     return 0;
   }
+
   // probe availability: a 8x8 call errors when the driver lacks simdgroup_matrix.
   {
     std::vector<std::uint16_t> w(64, 0);
@@ -87,6 +89,5 @@ int main() {
   std::printf("%s simdgroup_matrix gemm within atol 1e-3 of CPU matmul\n", ok ? "PASS" : "FAIL");
   if (!ok) ++g_failures;
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

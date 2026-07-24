@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -25,6 +26,63 @@ std::string cache_path() {
   std::string dir = tmp != nullptr ? tmp : "/tmp";
   if (!dir.empty() && dir.back() != '/') dir.push_back('/');
   return dir + "dbinfer_kv_prefix_test.bin";
+}
+
+// prefills the prefix into `model`, serializes it to `path`, then scores the
+// token at prefix_len.
+std::optional<std::vector<float>> run_fresh(dbinfer::model::Model& model, const std::int32_t* ids,
+                                            std::size_t prefix_len, const std::string& path,
+                                            std::size_t vocab) {
+  for (std::size_t i = 0; i < prefix_len; ++i) model.forward(ids[i], static_cast<std::int32_t>(i));
+
+  if (auto ok = model.save_kv_prefix(path, std::span<const std::int32_t>(ids, prefix_len)); !ok) {
+    std::printf("FAIL save_kv_prefix: %s\n", dbinfer::gguf::to_string(ok.error()).c_str());
+    return std::nullopt;
+  }
+
+  const float* lf = model.forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
+  return std::vector<float>(lf, lf + vocab);
+}
+
+// reloads the serialized prefix into `model`, then scores the token at
+// prefix_len the same way run_fresh() did.
+std::optional<std::vector<float>> run_cached(dbinfer::model::Model& model, const std::int32_t* ids,
+                                             std::size_t prefix_len, std::size_t total,
+                                             const std::string& path, std::size_t vocab) {
+  auto restored = model.load_kv_prefix(path, std::span<const std::int32_t>(ids, total));
+  if (!restored) {
+    std::printf("FAIL load_kv_prefix: %s\n", dbinfer::gguf::to_string(restored.error()).c_str());
+    return std::nullopt;
+  }
+  if (*restored != prefix_len) {
+    std::printf("FAIL restored prefix_len %zu != %zu\n", *restored, prefix_len);
+    return std::nullopt;
+  }
+
+  const float* lc = model.forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
+  return std::vector<float>(lc, lc + vocab);
+}
+
+// prints the first mismatching element on failure
+bool logits_match(std::span<const float> fresh, std::span<const float> cached) {
+  if (std::memcmp(fresh.data(), cached.data(), fresh.size() * sizeof(float)) == 0) return true;
+
+  std::size_t first = 0;
+  for (; first < fresh.size(); ++first)
+    if (fresh[first] != cached[first]) break;
+  std::printf("FAIL logits differ: first mismatch at %zu (fresh %.9g cached %.9g)\n", first,
+              static_cast<double>(fresh[first]), static_cast<double>(cached[first]));
+  return false;
+}
+
+// an absent cache file must surface an error
+bool missing_file_errors(dbinfer::model::Model& model, const std::int32_t* ids, std::size_t total) {
+  auto bad = model.load_kv_prefix("does_not_exist.bin", std::span<const std::int32_t>(ids, total));
+  if (bad) {
+    std::printf("FAIL missing file should error\n");
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -50,56 +108,22 @@ int main() {
   }
   const std::size_t vocab = model_a->config().vocab_size;
 
-  // fresh: prefill the prefix, dump it, then score the token at prefix_len.
-  for (std::size_t i = 0; i < prefix_len; ++i)
-    model_a->forward(ids[i], static_cast<std::int32_t>(i));
-  if (auto ok = model_a->save_kv_prefix(path, std::span<const std::int32_t>(ids, prefix_len));
-      !ok) {
-    std::printf("FAIL save_kv_prefix: %s\n", dbinfer::gguf::to_string(ok.error()).c_str());
-    return 1;
-  }
-  const float* lf = model_a->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
-  std::vector<float> logits_fresh(lf, lf + vocab);
+  auto logits_fresh = run_fresh(*model_a, ids, prefix_len, path, vocab);
+  if (!logits_fresh) return 1;
 
-  // cached: reload the prefix into a fresh model, score the same token.
   auto model_b = dbinfer::model::Model::load(*loaded);
   if (!model_b) {
     std::printf("FAIL model load: %s\n", dbinfer::gguf::to_string(model_b.error()).c_str());
     return 1;
   }
-  auto restored = model_b->load_kv_prefix(path, std::span<const std::int32_t>(ids, total));
-  if (!restored) {
-    std::printf("FAIL load_kv_prefix: %s\n", dbinfer::gguf::to_string(restored.error()).c_str());
-    return 1;
-  }
-  if (*restored != prefix_len) {
-    std::printf("FAIL restored prefix_len %zu != %zu\n", *restored, prefix_len);
-    return 1;
-  }
-  const float* lc = model_b->forward(ids[prefix_len], static_cast<std::int32_t>(prefix_len));
-  std::vector<float> logits_cached(lc, lc + vocab);
 
+  auto logits_cached = run_cached(*model_b, ids, prefix_len, total, path, vocab);
+  if (!logits_cached) return 1;
   std::remove(path.c_str());
 
-  if (std::memcmp(logits_fresh.data(), logits_cached.data(), vocab * sizeof(float)) != 0) {
-    std::size_t first = 0;
-    for (; first < vocab; ++first)
-      if (logits_fresh[first] != logits_cached[first]) break;
-    std::printf("FAIL logits differ: first mismatch at %zu (fresh %.9g cached %.9g)\n", first,
-                static_cast<double>(logits_fresh[first]),
-                static_cast<double>(logits_cached[first]));
-    return 1;
-  }
+  if (!logits_match(*logits_fresh, *logits_cached)) return 1;
 
-  // header validation: a corrupted magic must return an error rather than crash.
-  {
-    auto bad =
-        model_b->load_kv_prefix("does_not_exist.bin", std::span<const std::int32_t>(ids, total));
-    if (bad) {
-      std::printf("FAIL missing file should error\n");
-      return 1;
-    }
-  }
+  if (!missing_file_errors(*model_b, ids, total)) return 1;
 
   std::printf("PASS logits bitwise identical over %zu values\n", vocab);
   return 0;

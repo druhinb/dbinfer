@@ -9,18 +9,12 @@
 #include <variant>
 #include <vector>
 
+#include "test_util.hpp"
+
 namespace {
 
-int g_failures = 0;
-
-void check(bool ok, const char* what) {
-  if (ok) {
-    std::printf("PASS %s\n", what);
-  } else {
-    std::printf("FAIL %s\n", what);
-    ++g_failures;
-  }
-}
+using dbinfer::test::check;
+using dbinfer::test::g_failures;
 
 struct Buf {
   std::vector<std::uint8_t> bytes;
@@ -140,20 +134,7 @@ bool meta_is(const dbinfer::gguf::GgufFile& f, const char* key, T expected) {
   return p != nullptr && *p == expected;
 }
 
-void test_happy() {
-  std::size_t infos_start = 0;
-  auto bytes = build_good(&infos_start);
-  std::string path = write_temp(bytes);
-  auto loaded = dbinfer::gguf::load(path);
-  ::unlink(path.c_str());
-
-  if (!loaded) {
-    std::printf("FAIL happy load: %s\n", dbinfer::gguf::to_string(loaded.error()).c_str());
-    ++g_failures;
-    return;
-  }
-  const auto& f = *loaded;
-
+void check_header_and_metadata(const dbinfer::gguf::GgufFile& f) {
   check(f.version == 3, "version == 3");
   check(f.alignment == 32, "alignment == 32");
   check(f.tensors.size() == 2, "tensor_count == 2");
@@ -185,7 +166,9 @@ void test_happy() {
   check(arr_ok, "k.arr decodes (Int32 x3 = [10,20,30])");
 
   check(f.find_meta("does.not.exist") == nullptr, "find_meta miss returns null");
+}
 
+void check_tensor_layout(const dbinfer::gguf::GgufFile& f) {
   const auto& tA = f.tensors[0];
   const auto& tB = f.tensors[1];
   check(tA.name == "tA" && tA.n_dims == 2, "tA name/n_dims");
@@ -206,6 +189,23 @@ void test_happy() {
   if (b_in) {
     check(std::to_integer<std::uint8_t>(tB.data[0]) == 128, "tB data content offset correct");
   }
+}
+
+void test_happy() {
+  std::size_t infos_start = 0;
+  auto bytes = build_good(&infos_start);
+  std::string path = write_temp(bytes);
+  auto loaded = dbinfer::gguf::load(path);
+  ::unlink(path.c_str());
+
+  if (!loaded) {
+    std::printf("FAIL happy load: %s\n", dbinfer::gguf::to_string(loaded.error()).c_str());
+    ++g_failures;
+    return;
+  }
+
+  check_header_and_metadata(*loaded);
+  check_tensor_layout(*loaded);
 }
 
 void test_bad_magic() {
@@ -290,6 +290,5 @@ int main() {
   test_nested_array();
   test_dim_overflow();
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

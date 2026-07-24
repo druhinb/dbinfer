@@ -51,6 +51,7 @@ int main() {
     std::printf("FAIL model load: %s\n", dbinfer::gguf::to_string(mret.error()).c_str());
     return 1;
   }
+
   dbinfer::model::Model& model = *mret;
   const auto& cfg = model.config();
 
@@ -87,6 +88,5 @@ int main() {
     }
   }
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

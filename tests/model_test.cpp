@@ -37,6 +37,50 @@ void check(const char* what, const std::vector<float>& got, const std::vector<fl
   if (!ok) ++g_failures;
 }
 
+// Step 6: layer-0 head-0 attention output, fed from the embedding rows.
+void test_attn_head0(dbinfer::model::Model& model, const dbinfer::model::Config& cfg,
+                     const std::int32_t* positions, std::size_t seq, std::size_t dim,
+                     std::size_t hd, const std::vector<float>& emb) {
+  dbinfer::model::KVCache kv(cfg.n_layers, seq, cfg.n_kv_heads, hd);
+  std::vector<float> head0(seq * hd);
+  for (std::size_t s = 0; s < seq; ++s) {
+    std::vector<float> x(emb.begin() + s * dim, emb.begin() + (s + 1) * dim);
+    dbinfer::model::DebugCapture dbg;
+    dbg.attn_head0 = head0.data() + s * hd;
+    model.decode_layer(0, x.data(), positions[s], kv, &dbg);
+  }
+  auto ref = load_bin("attn_head0_out.bin", seq * hd);
+  if (!ref.empty()) check("attn_head0", head0, ref);
+}
+
+// Step 7: full layer-0 residual output.
+void test_layer0_out(dbinfer::model::Model& model, const dbinfer::model::Config& cfg,
+                     const std::int32_t* positions, std::size_t seq, std::size_t dim,
+                     std::size_t hd, const std::vector<float>& emb) {
+  dbinfer::model::KVCache kv(cfg.n_layers, seq, cfg.n_kv_heads, hd);
+  std::vector<float> hout(seq * dim);
+  for (std::size_t s = 0; s < seq; ++s) {
+    std::vector<float> x(emb.begin() + s * dim, emb.begin() + (s + 1) * dim);
+    dbinfer::model::DebugCapture dbg;
+    dbg.layer_out = hout.data() + s * dim;
+    model.decode_layer(0, x.data(), positions[s], kv, &dbg);
+  }
+  auto ref = load_bin("layer0_out.bin", seq * dim);
+  if (!ref.empty()) check("layer0_out", hout, ref);
+}
+
+// Step 8: full forward logits for all six positions.
+void test_logits(dbinfer::model::Model& model, const dbinfer::model::Config& cfg,
+                 const std::int32_t* ids, const std::int32_t* positions, std::size_t seq) {
+  std::vector<float> logits(seq * cfg.vocab_size);
+  for (std::size_t s = 0; s < seq; ++s) {
+    const float* l = model.forward(ids[s], positions[s]);
+    std::copy(l, l + cfg.vocab_size, logits.data() + s * cfg.vocab_size);
+  }
+  auto ref = load_bin("logits.bin", seq * cfg.vocab_size);
+  if (!ref.empty()) check("logits", logits, ref);
+}
+
 }  // namespace
 
 int main() {
@@ -45,6 +89,7 @@ int main() {
     std::printf("FAIL cannot load gguf: %s\n", dbinfer::gguf::to_string(loaded.error()).c_str());
     return 1;
   }
+
   auto mret = dbinfer::model::Model::load(*loaded);
   if (!mret) {
     std::printf("FAIL model load: %s\n", dbinfer::gguf::to_string(mret.error()).c_str());
@@ -66,45 +111,9 @@ int main() {
   for (std::size_t s = 0; s < seq; ++s) model.embed(ids[s], emb.data() + s * dim);
   check("embedding", emb, emb_ref);
 
-  // Step 6: layer-0 head-0 attention output, fed from the embedding rows.
-  {
-    dbinfer::model::KVCache kv(cfg.n_layers, seq, cfg.n_kv_heads, hd);
-    std::vector<float> head0(seq * hd);
-    for (std::size_t s = 0; s < seq; ++s) {
-      std::vector<float> x(emb.begin() + s * dim, emb.begin() + (s + 1) * dim);
-      dbinfer::model::DebugCapture dbg;
-      dbg.attn_head0 = head0.data() + s * hd;
-      model.decode_layer(0, x.data(), positions[s], kv, &dbg);
-    }
-    auto ref = load_bin("attn_head0_out.bin", seq * hd);
-    if (!ref.empty()) check("attn_head0", head0, ref);
-  }
+  test_attn_head0(model, cfg, positions, seq, dim, hd, emb);
+  test_layer0_out(model, cfg, positions, seq, dim, hd, emb);
+  test_logits(model, cfg, ids, positions, seq);
 
-  // Step 7: full layer-0 residual output.
-  {
-    dbinfer::model::KVCache kv(cfg.n_layers, seq, cfg.n_kv_heads, hd);
-    std::vector<float> hout(seq * dim);
-    for (std::size_t s = 0; s < seq; ++s) {
-      std::vector<float> x(emb.begin() + s * dim, emb.begin() + (s + 1) * dim);
-      dbinfer::model::DebugCapture dbg;
-      dbg.layer_out = hout.data() + s * dim;
-      model.decode_layer(0, x.data(), positions[s], kv, &dbg);
-    }
-    auto ref = load_bin("layer0_out.bin", seq * dim);
-    if (!ref.empty()) check("layer0_out", hout, ref);
-  }
-
-  // Step 8: full forward logits for all six positions.
-  {
-    std::vector<float> logits(seq * cfg.vocab_size);
-    for (std::size_t s = 0; s < seq; ++s) {
-      const float* l = model.forward(ids[s], positions[s]);
-      std::copy(l, l + cfg.vocab_size, logits.data() + s * cfg.vocab_size);
-    }
-    auto ref = load_bin("logits.bin", seq * cfg.vocab_size);
-    if (!ref.empty()) check("logits", logits, ref);
-  }
-
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

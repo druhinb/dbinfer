@@ -8,6 +8,7 @@
 
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
+#include "test_util.hpp"
 
 // the int8-dot matvec is the reference activation-quant kernel. two properties
 // pin it: it reproduces the block-scaled integer dot bit for bit, and it stays
@@ -19,8 +20,7 @@ using dbinfer::tensor::BlockQ8_0;
 using dbinfer::tensor::f16_to_f32;
 using dbinfer::tensor::f32_to_f16;
 using dbinfer::tensor::kBlockSize;
-
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 void check_eq(const char* what, float got, float want) {
   if (got == want) {
@@ -58,9 +58,7 @@ float reference_dot(const std::int8_t* wq, const std::uint16_t* dw, const BlockQ
   return acc;
 }
 
-}  // namespace
-
-int main() {
+void test_int8_dot_matches_reference_and_fp32() {
   using dbinfer::tensor::matvec_q4_0;
   using dbinfer::tensor::matvec_q8_0;
   using dbinfer::tensor::quantize_row_q8_0;
@@ -176,7 +174,12 @@ int main() {
   check_eq("q4 int8-dot exact", max_q4_exact, 0.0f);
   check_le("q8 vs fp32 within noise", max_q8_noise, 0.0f);
   check_le("q4 vs fp32 within noise", max_q4_noise, 0.0f);
+}
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+}  // namespace
+
+int main() {
+  test_int8_dot_matches_reference_and_fp32();
+
+  return dbinfer::test::summary();
 }

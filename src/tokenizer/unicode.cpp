@@ -64,6 +64,21 @@ const ByteCodec& codec() {
   return c;
 }
 
+// -1 means an invalid lead byte, otherwise trailing continuation byte count.
+struct LeadClass {
+  int continuation_bytes;
+  std::uint32_t payload;
+};
+
+LeadClass classify_lead_byte(unsigned char c0) {
+  if (!(c0 & 0x80)) return {0, c0};
+  if (!(c0 & 0x40)) return {-1, 0};
+  if (!(c0 & 0x20)) return {1, static_cast<std::uint32_t>(c0 & 0x1Fu)};
+  if (!(c0 & 0x10)) return {2, static_cast<std::uint32_t>(c0 & 0x0Fu)};
+  if (!(c0 & 0x08)) return {3, static_cast<std::uint32_t>(c0 & 0x07u)};
+  return {-1, 0};
+}
+
 }  // namespace
 
 std::size_t utf8_len(unsigned char lead) {
@@ -74,51 +89,35 @@ std::size_t utf8_len(unsigned char lead) {
 std::vector<std::uint32_t> utf8_to_cpts(std::string_view s) {
   std::vector<std::uint32_t> out;
   out.reserve(s.size());
-  std::size_t i = 0;
   const std::size_t n = s.size();
   auto cont = [&](std::size_t k) {
     return k < n && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80;
   };
+
+  std::size_t i = 0;
   while (i < n) {
-    unsigned char c0 = static_cast<unsigned char>(s[i]);
-    if (!(c0 & 0x80)) {
+    const unsigned char c0 = static_cast<unsigned char>(s[i]);
+    const LeadClass lead = classify_lead_byte(c0);
+
+    if (lead.continuation_bytes == 0) {
       out.push_back(c0);
       i += 1;
-    } else if (!(c0 & 0x40)) {
-      out.push_back(0xFFFD);
-      i += 1;
-    } else if (!(c0 & 0x20)) {
-      if (cont(i + 1)) {
-        out.push_back(((c0 & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu));
-        i += 2;
-      } else {
-        out.push_back(0xFFFD);
-        i += 1;
-      }
-    } else if (!(c0 & 0x10)) {
-      if (cont(i + 1) && cont(i + 2)) {
-        out.push_back(((c0 & 0x0Fu) << 12) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
-                      (static_cast<unsigned char>(s[i + 2]) & 0x3Fu));
-        i += 3;
-      } else {
-        out.push_back(0xFFFD);
-        i += 1;
-      }
-    } else if (!(c0 & 0x08)) {
-      if (cont(i + 1) && cont(i + 2) && cont(i + 3)) {
-        out.push_back(((c0 & 0x07u) << 18) |
-                      ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 12) |
-                      ((static_cast<unsigned char>(s[i + 2]) & 0x3Fu) << 6) |
-                      (static_cast<unsigned char>(s[i + 3]) & 0x3Fu));
-        i += 4;
-      } else {
-        out.push_back(0xFFFD);
-        i += 1;
-      }
-    } else {
-      out.push_back(0xFFFD);
-      i += 1;
+      continue;
     }
+
+    bool valid = lead.continuation_bytes > 0;
+    for (int k = 1; valid && k <= lead.continuation_bytes; ++k) valid = cont(i + k);
+    if (!valid) {
+      out.push_back(0xFFFD);
+      i += 1;
+      continue;
+    }
+
+    std::uint32_t cp = lead.payload;
+    for (int k = 1; k <= lead.continuation_bytes; ++k)
+      cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3Fu);
+    out.push_back(cp);
+    i += static_cast<std::size_t>(lead.continuation_bytes) + 1;
   }
   return out;
 }

@@ -103,6 +103,7 @@ std::string Tokenizer::decode(std::span<const std::int32_t> ids) const {
     if (id < 0 || static_cast<std::size_t>(id) >= id_to_token_.size()) continue;
     joined += id_to_token_[static_cast<std::size_t>(id)];
   }
+
   std::string out;
   for (std::uint32_t cpt : utf8_to_cpts(joined)) {
     std::uint8_t b;

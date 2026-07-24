@@ -6,16 +6,13 @@
 #include <vector>
 
 #include "tensor/matmul.hpp"
+#include "test_util.hpp"
 
 // matmul_accel reorders the reduction through cblas_sgemm, so it matches the
 // scalar matmul only within GEMM tolerance. this pins the correctness bound
 // before the wrapper feeds any forward pass, and records a prefill timing.
 
-namespace {
-
-int g_failures = 0;
-
-}  // namespace
+using dbinfer::test::g_failures;
 
 int main() {
   constexpr std::size_t m = 512, out = 512, in = 896;
@@ -57,6 +54,5 @@ int main() {
   std::printf("BENCH matmul [%zu x %zu x %zu] scalar %.3f ms  accel %.3f ms  speedup %.2fx\n", m,
               out, in, scalar_ms, accel_ms, scalar_ms / accel_ms);
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

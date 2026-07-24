@@ -228,6 +228,7 @@ bool needs_activation_quant(GgmlType t) { return t == GgmlType::Q8_0 || t == Ggm
 void matvec_rows(QuantMatrix w, const float* x, const BlockQ8_0* xq, float* y, std::size_t lo,
                  std::size_t hi, std::size_t in) {
   if (lo >= hi) return;
+
   const std::size_t rows = hi - lo;
   switch (w.type) {
     case GgmlType::Q8_0:
@@ -239,11 +240,13 @@ void matvec_rows(QuantMatrix w, const float* x, const BlockQ8_0* xq, float* y, s
       (q8 ? d.q8 : d.q4)(w.data + lo * row_bytes, xq, y + lo, rows, in);
       return;
     }
+
     case GgmlType::Q5_0: {
       const std::size_t row_bytes = (in / kBlockSize) * sizeof(BlockQ5_0);
       matvec_q5_0_scalar(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
     }
+
     case GgmlType::Q4_K:
     case GgmlType::Q6_K: {
       const bool q4k = w.type == GgmlType::Q4_K;
@@ -252,11 +255,13 @@ void matvec_rows(QuantMatrix w, const float* x, const BlockQ8_0* xq, float* y, s
       (q4k ? matvec_q4_k_scalar : matvec_q6_k_scalar)(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
     }
+
     case GgmlType::F16: {
       const std::size_t row_bytes = in * sizeof(std::uint16_t);
       matvec_f16_view(w.data + lo * row_bytes, x, y + lo, rows, in);
       return;
     }
+
     default: {
       const std::size_t row_bytes = in * sizeof(float);
       matvec_f32_view(w.data + lo * row_bytes, x, y + lo, rows, in);
@@ -362,6 +367,7 @@ void matmul_quant(QuantMatrix w, const float* A, float* C, std::size_t m, std::s
     matmul_f16_batched(W, A, C, m, out, in);
     return;
   }
+
   // other dtypes keep the per-row kernel so a chunk row stays bit-identical.
   for (std::size_t r = 0; r < m; ++r) matvec_quant(w, A + r * in, C + r * out, out, in);
 }

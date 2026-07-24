@@ -14,10 +14,12 @@
 
 #include "backend/metal_backend.hpp"
 #include "tensor/ops.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::check;
+using dbinfer::test::g_failures;
 
 struct Lcg {
   std::uint64_t s;
@@ -27,11 +29,6 @@ struct Lcg {
     return static_cast<float>(hi) / 2147483648.0f - 1.0f;
   }
 };
-
-void check(bool ok, const char* what) {
-  std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok) ++g_failures;
-}
 
 double max_abs_diff(const std::vector<float>& a, const std::vector<float>& b) {
   double m = 0.0;
@@ -49,6 +46,7 @@ void cpu_attention(const float* q, const float* k, const float* v, float* out,
   const std::size_t stride = nkv * hd;
   const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
   std::vector<float> sc(n_positions, 0.0f);
+
   for (std::size_t h = 0; h < nh; ++h) {
     const std::size_t kh = h / gqa;
     const float* qh = q + h * hd;
@@ -59,6 +57,7 @@ void cpu_attention(const float* q, const float* k, const float* v, float* out,
       sc[pp] = dot * scale;
     }
     dbinfer::tensor::softmax(sc.data(), sc.data(), n_positions);
+
     float* outh = out + h * hd;
     for (std::size_t i = 0; i < hd; ++i) outh[i] = 0.0f;
     for (std::size_t pp = 0; pp < n_positions; ++pp) {
@@ -75,6 +74,7 @@ double test_rmsnorm(dbinfer::backend::Backend& m, std::size_t rows, std::size_t 
   for (auto& e : x) e = rng.next();
   for (auto& e : w) e = rng.next();
   const float eps = 1e-6f;
+
   dbinfer::tensor::rmsnorm(x.data(), w.data(), eps, cpu.data(), rows, dim);
   auto r = m.rmsnorm(x.data(), w.data(), eps, gpu.data(), rows, dim);
   if (!r) {
@@ -82,6 +82,7 @@ double test_rmsnorm(dbinfer::backend::Backend& m, std::size_t rows, std::size_t 
     ++g_failures;
     return 0.0;
   }
+
   const double err = max_abs_diff(cpu, gpu);
   std::printf("  rmsnorm rows=%zu dim=%zu max_err=%.3e\n", rows, dim, err);
   return err;
@@ -95,6 +96,7 @@ double test_rope(dbinfer::backend::Backend& m, std::size_t nh, std::size_t seq, 
   cpu = x;
   gpu = x;
   const float theta = 1000000.0f;
+
   dbinfer::tensor::rope(cpu.data(), pos.data(), theta, nh, seq, hd);
   auto r = m.rope(gpu.data(), pos.data(), theta, nh, seq, hd);
   if (!r) {
@@ -102,6 +104,7 @@ double test_rope(dbinfer::backend::Backend& m, std::size_t nh, std::size_t seq, 
     ++g_failures;
     return 0.0;
   }
+
   const double err = max_abs_diff(cpu, gpu);
   std::printf("  rope nh=%zu seq=%zu hd=%zu pos0=%d posN=%d max_err=%.3e\n", nh, seq, hd,
               pos.front(), pos.back(), err);
@@ -117,6 +120,7 @@ double test_attention(dbinfer::backend::Backend& m, std::size_t nh, std::size_t 
   for (auto& e : q) e = rng.next();
   for (auto& e : k) e = rng.next();
   for (auto& e : v) e = rng.next();
+
   cpu_attention(q.data(), k.data(), v.data(), cpu.data(), n_pos, nh, nkv, hd);
   auto r = m.attention(q.data(), k.data(), v.data(), gpu.data(), n_pos, nh, nkv, hd);
   if (!r) {
@@ -124,6 +128,7 @@ double test_attention(dbinfer::backend::Backend& m, std::size_t nh, std::size_t 
     ++g_failures;
     return 0.0;
   }
+
   const double err = max_abs_diff(cpu, gpu);
   std::printf("  attention nh=%zu nkv=%zu hd=%zu n_pos=%zu max_err=%.3e\n", nh, nkv, hd, n_pos,
               err);
@@ -165,6 +170,5 @@ int main() {
   check(worst_attn <= 1e-4, "metal attention within atol 1e-4 of CPU");
 
   std::printf("worst rms=%.3e rope=%.3e attn=%.3e\n", worst_rms, worst_rope, worst_attn);
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

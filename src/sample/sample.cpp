@@ -38,6 +38,7 @@ std::expected<void, Error> validate(const SamplerParams& p) {
 void apply_penalties(std::span<Candidate> c, std::span<const std::int32_t> recent,
                      float repeat_penalty, float freq_penalty, float presence_penalty) {
   if (repeat_penalty == 1.0f && freq_penalty == 0.0f && presence_penalty == 0.0f) return;
+
   std::unordered_map<std::int32_t, int> counts;
   for (std::int32_t id : recent) ++counts[id];
   for (const auto& [id, count] : counts) {

@@ -97,6 +97,7 @@ bool match_partial_char(const Element* pos, PartialUtf8 partial) {
     else if (n_remain == 3)
       low = 1u << 16;
   }
+
   const Element* p = pos;
   do {
     if (p[1].type == ElemType::RngUpper) {
@@ -200,6 +201,7 @@ std::expected<std::uint32_t, Error> decode_one(const char* pos, const char*& out
   } else {
     return std::unexpected(Error{"invalid utf-8 lead byte in grammar"});
   }
+
   ++pos;
   for (int i = 0; i < n_remain; ++i) {
     if ((static_cast<std::uint8_t>(*pos) >> 6) != 2)
@@ -240,6 +242,7 @@ std::expected<std::uint32_t, Error> parse_char(const char* pos, const char*& out
         return std::unexpected(Error{std::string("unknown escape '\\") + pos[1] + "'"});
     }
   }
+
   if (*pos != 0) return decode_one(pos, out);
   return std::unexpected(Error{"unexpected end of input in character terminal"});
 }
@@ -310,6 +313,7 @@ std::expected<const char*, Error> parse_char_class(const char* pos, std::vector<
     ++pos;
     start_type = ElemType::CharNot;
   }
+
   last_sym_start = out.size();
   while (*pos != ']') {
     if (*pos == 0) return std::unexpected(Error{"unterminated character class"});
@@ -357,6 +361,7 @@ std::expected<const char*, Error> parse_repetition(ParseState& st, const char* p
                                                    std::size_t last_sym_start, bool is_nested) {
   if (last_sym_start == out.size())
     return std::unexpected(Error{"repetition operator with no preceding symbol"});
+
   const std::uint32_t sub_id = st.generate_symbol_id(rule_name);
   std::vector<Element> sub(out.begin() + static_cast<std::ptrdiff_t>(last_sym_start), out.end());
   if (*pos == '*' || *pos == '+') sub.push_back({ElemType::RuleRef, sub_id});
@@ -375,6 +380,7 @@ std::expected<const char*, Error> parse_sequence(ParseState& st, const char* src
                                                  std::vector<Element>& out, bool is_nested) {
   std::size_t last_sym_start = out.size();
   const char* pos = src;
+
   while (*pos != 0) {
     if (*pos == '"') {
       pos = TRY(parse_string_literal(pos, out, last_sym_start, is_nested));
@@ -400,6 +406,7 @@ std::expected<const char*, Error> parse_alternates(ParseState& st, const char* s
   DepthGuard guard{st.depth};
   if (st.depth > kMaxParseDepth)
     return std::unexpected(Error{"grammar nesting exceeds maximum depth"});
+
   std::vector<Element> rule;
   const char* pos = TRY(parse_sequence(st, src, rule_name, rule, is_nested));
   while (*pos == '|') {
@@ -427,6 +434,7 @@ const Element* skip_symbol(const Element* p) {
 // nullable.
 std::vector<bool> nullable_rules(const std::vector<std::vector<Element>>& rules) {
   std::vector<bool> nullable(rules.size(), false);
+
   for (bool changed = true; changed;) {
     changed = false;
     for (std::size_t id = 0; id < rules.size(); ++id) {
@@ -463,6 +471,7 @@ std::optional<std::uint32_t> left_recursive_rule(const std::vector<std::vector<E
                                                  const std::vector<bool>& nullable) {
   const std::size_t n = rules.size();
   std::vector<std::vector<std::uint32_t>> edges(n);
+
   for (std::size_t id = 0; id < n; ++id) {
     const Element* p = rules[id].data();
     bool in_left = true;
@@ -490,6 +499,7 @@ std::optional<std::uint32_t> left_recursive_rule(const std::vector<std::vector<E
   std::vector<Color> color(n, Color::White);
   std::vector<std::size_t> next(n, 0);
   std::vector<std::uint32_t> stack;
+
   for (std::uint32_t start = 0; start < n; ++start) {
     if (color[start] != Color::White) continue;
     color[start] = Color::Gray;
@@ -571,6 +581,7 @@ void Grammar::advance_stack(const Stack& stack, std::vector<Stack>& out) const {
     if (std::find(out.begin(), out.end(), stack) == out.end()) out.push_back(stack);
     return;
   }
+
   const Element* pos = stack.back();
   switch (pos->type) {
     case ElemType::RuleRef: {

@@ -146,9 +146,10 @@ std::expected<std::vector<Prepared>, Error> prepare_tensors(const GgufFile& src,
     const TensorInfo& t = src.tensors[i];
     if (t.data == nullptr)
       return std::unexpected(Error{"tensor '" + t.name + "' has no bound data", path, 0});
+
     prep[i].logical = t.nbytes;
     prep[i].stored = t.nbytes;
-    prep[i].xxh = xxhash64(t.data, static_cast<std::size_t>(t.nbytes));
+    prep[i].xxh = xxhash64({t.data, static_cast<std::size_t>(t.nbytes)});
     if (opts.compress && t.type == GgmlType::F16 && t.nbytes > 0) {
       CompressResult r = compress_f16({t.data, static_cast<std::size_t>(t.nbytes)});
       if (r.compressed) {
@@ -221,6 +222,7 @@ Assigned assign_offsets(const GgufFile& src, const std::vector<std::size_t>& ord
   using DedupKey = std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>;
   std::map<DedupKey, std::size_t> owners;
   Assigned a{data_offset, data_offset, false};
+
   for (const std::size_t i : order) {
     const TensorInfo& t = src.tensors[i];
     const DedupKey key{prep[i].xxh, prep[i].logical, static_cast<std::uint32_t>(t.type)};
@@ -286,7 +288,7 @@ ByteBuf encode_header(std::uint64_t nt, std::uint64_t metadata_count, const Layo
   header.put<std::uint64_t>(layout.tensor_table_size);
   header.put<std::uint64_t>(layout.data_offset);
   header.put<std::uint64_t>(file_size);
-  const std::uint64_t header_checksum = xxhash64(header.data.data(), header.data.size());
+  const std::uint64_t header_checksum = xxhash64({header.data.data(), header.data.size()});
   header.put<std::uint64_t>(header_checksum);
   header.pad_to(kHeaderSize);
   return header;
@@ -301,12 +303,14 @@ std::expected<void, Error> write_file(const std::string& path, const ByteBuf& he
   if (!fp)
     return std::unexpected(
         Error{std::string("cannot open for write: ") + std::strerror(errno), path, 0});
+
   Writer w{fp.get(), path};
   TRY(w.write(header.data.data(), header.data.size()));
   TRY(w.write(meta.data.data(), meta.data.size()));
   TRY(w.write(pool.data.data(), pool.data.size()));
   TRY(w.write(table.data.data(), table.data.size()));
   TRY(w.pad_to(data_offset));
+
   for (const std::size_t i : order) {
     if (!prep[i].owner) continue;
     TRY(w.pad_to(prep[i].data_offset));
@@ -365,9 +369,11 @@ std::expected<Header, Error> read_header(const std::byte* base, std::uint64_t si
     return std::unexpected(
         Error{std::string("bad magic: expected 'DBMF', found 0x") + buf, path, 0});
   }
+
   const auto version = TRY(c.read_scalar<std::uint32_t>());
   if (version != kVersion)
     return std::unexpected(Error{"unsupported dbmf version " + std::to_string(version), path, 4});
+
   Header h{};
   h.alignment = TRY(c.read_scalar<std::uint32_t>());
   h.flags = TRY(c.read_scalar<std::uint32_t>());
@@ -385,7 +391,7 @@ std::expected<Header, Error> read_header(const std::byte* base, std::uint64_t si
 
   if (h.alignment == 0 || (h.alignment & (h.alignment - 1)) != 0)
     return std::unexpected(Error{"alignment not a power of two", path, 8});
-  const std::uint64_t computed = xxhash64(base, 96);
+  const std::uint64_t computed = xxhash64({base, 96});
   if (computed != stored_checksum)
     return std::unexpected(Error{"header checksum mismatch", path, 96});
 
@@ -522,7 +528,7 @@ std::expected<DecodedAux, Error> decode_compressed_tensors(const std::byte* base
     std::span<const std::byte> blob{base + off, static_cast<std::size_t>(ci.stored)};
     std::span<std::byte> dst{cursor, static_cast<std::size_t>(ci.logical)};
     TRY(decompress_f16(blob, dst));
-    if (xxhash64(cursor, static_cast<std::size_t>(ci.logical)) != ci.xxh)
+    if (xxhash64({cursor, static_cast<std::size_t>(ci.logical)}) != ci.xxh)
       return std::unexpected(Error{
           "decoded tensor at offset " + std::to_string(off) + " fails its checksum", path, off});
     out.comp_ptr.emplace(off, cursor);
@@ -546,11 +552,12 @@ std::expected<std::vector<TensorInfo>, Error> build_tensors(
     for (std::uint32_t d = 0; d < r.n_dims; ++d) info.shape[d] = r.dims[d];
     info.offset = r.data_offset;
     info.nbytes = r.logical;
+
     if ((r.flags & kFlagCompressed) != 0) {
       info.data = comp_ptr.at(r.data_offset);
     } else {
       info.data = base + r.data_offset;
-      if (opts.verify && xxhash64(info.data, static_cast<std::size_t>(r.logical)) != r.xxh)
+      if (opts.verify && xxhash64({info.data, static_cast<std::size_t>(r.logical)}) != r.xxh)
         return std::unexpected(
             Error{"tensor '" + r.name + "' fails its checksum", path, r.data_offset});
     }

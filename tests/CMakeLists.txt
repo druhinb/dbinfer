@@ -5,6 +5,10 @@
 # (fresh checkout before running the dumper), skip the target gracefully so the
 # build still succeeds — the plan requires both configs to build regardless.
 
+# every test includes test_util.hpp, so put this directory on the include path
+# once rather than repeating target_include_directories per target.
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
+
 add_executable(gguf_test gguf_test.cpp)
 target_link_libraries(gguf_test PRIVATE dbinfer_gguf)
 add_test(NAME gguf_test COMMAND gguf_test)
@@ -79,7 +83,6 @@ set(GOLDEN_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/golden/manifest_generated.hpp")
 
 if(EXISTS "${GOLDEN_MANIFEST}")
   add_executable(golden_reload_test golden_reload_test.cpp)
-  target_include_directories(golden_reload_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(golden_reload_test
     PRIVATE DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
   add_test(NAME golden_reload_test COMMAND golden_reload_test)
@@ -98,26 +101,22 @@ endif()
 set(TEST_GGUF "${CMAKE_SOURCE_DIR}/tools/llama.cpp/models/qwen2.5-0.5b.gguf")
 if(EXISTS "${TEST_GGUF}")
   add_executable(tokenizer_test tokenizer_test.cpp)
-  target_include_directories(tokenizer_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(tokenizer_test PRIVATE dbinfer_tokenizer)
   target_compile_definitions(tokenizer_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
   add_test(NAME tokenizer_test COMMAND tokenizer_test)
 
   add_executable(kv_prefix_cache_test kv_prefix_cache_test.cpp)
-  target_include_directories(kv_prefix_cache_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(kv_prefix_cache_test PRIVATE dbinfer_model)
   target_compile_definitions(kv_prefix_cache_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
   add_test(NAME kv_prefix_cache_test COMMAND kv_prefix_cache_test)
 
   add_executable(chunked_prefill_test chunked_prefill_test.cpp)
-  target_include_directories(chunked_prefill_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(chunked_prefill_test PRIVATE dbinfer_model)
   target_compile_definitions(chunked_prefill_test PRIVATE DBINFER_TEST_GGUF="${TEST_GGUF}")
   add_test(NAME chunked_prefill_test COMMAND chunked_prefill_test)
 
   if(EXISTS "${GOLDEN_MANIFEST}")
     add_executable(model_test model_test.cpp)
-    target_include_directories(model_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(model_test PRIVATE dbinfer_model)
     target_compile_definitions(model_test PRIVATE
       DBINFER_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
@@ -133,7 +132,6 @@ endif()
 set(QUANT_Q8 "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q8_0.gguf")
 if(EXISTS "${QUANT_Q8}" AND EXISTS "${GOLDEN_MANIFEST}")
   add_executable(quant_logits_test quant_logits_test.cpp)
-  target_include_directories(quant_logits_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(quant_logits_test PRIVATE dbinfer_model)
   target_compile_definitions(quant_logits_test PRIVATE
     DBINFER_QUANT_Q8_GGUF="${QUANT_Q8}"
@@ -144,7 +142,6 @@ else()
 endif()
 
 add_executable(dbmf_convert_test dbmf_convert_test.cpp)
-target_include_directories(dbmf_convert_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(dbmf_convert_test PRIVATE dbinfer_model dbinfer_dbmf)
 target_compile_definitions(dbmf_convert_test PRIVATE
   DBINFER_DBMF_DIR="${CMAKE_CURRENT_BINARY_DIR}")
@@ -159,7 +156,6 @@ add_test(NAME dbmf_convert_test COMMAND dbmf_convert_test)
 set(SPEC_TARGET "${CMAKE_SOURCE_DIR}/tools/llama.cpp/models/qwen2.5-0.5b.gguf")
 set(SPEC_DRAFT "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q4_0.gguf")
 add_executable(speculative_test speculative_test.cpp)
-target_include_directories(speculative_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(speculative_test PRIVATE dbinfer_model)
 if(EXISTS "${SPEC_TARGET}" AND EXISTS "${SPEC_DRAFT}")
   target_compile_definitions(speculative_test PRIVATE
@@ -178,7 +174,6 @@ set(DET_Q4K "${CMAKE_SOURCE_DIR}/build/quant/qwen2.5-0.5b-q4_k_m.gguf")
 if(EXISTS "${DET_F16}" OR EXISTS "${DET_Q8}" OR EXISTS "${DET_Q4}" OR EXISTS "${DET_Q6K}"
    OR EXISTS "${DET_Q4K}")
   add_executable(matvec_determinism_test matvec_determinism_test.cpp)
-  target_include_directories(matvec_determinism_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(matvec_determinism_test PRIVATE dbinfer_model)
   if(EXISTS "${DET_F16}")
     target_compile_definitions(matvec_determinism_test PRIVATE DBINFER_DET_F16="${DET_F16}")

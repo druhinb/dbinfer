@@ -14,10 +14,11 @@
 
 #include "gguf/gguf.hpp"
 #include "model/model.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 void expect(bool ok, const char* what) {
   if (!ok) {
@@ -214,6 +215,6 @@ int main() {
 #if defined(DBINFER_SPEC_TARGET) && defined(DBINFER_SPEC_DRAFT)
   test_end_to_end();
 #endif
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+
+  return dbinfer::test::summary();
 }

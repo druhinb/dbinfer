@@ -46,16 +46,20 @@ std::expected<void, Error> validate(const SamplerParams& p);
 void apply_penalties(std::span<Candidate> c, std::span<const std::int32_t> recent,
                      float repeat_penalty, float freq_penalty, float presence_penalty);
 void apply_temperature(std::span<Candidate> c, float temperature);
+
 // keeps only the k candidates with the highest logit, sorting c by logit
 // descending (ties broken by id ascending, for determinism) as a side effect.
 void top_k(std::vector<Candidate>& c, int k);
+
 // nucleus sampling: softmaxes c (sorting it by logit first), then keeps the
 // smallest prefix whose cumulative probability reaches p.
 void top_p(std::vector<Candidate>& c, float p);
+
 // drops any candidate whose logit is more than log(min_p) below the max
 // logit, i.e. whose probability relative to the top candidate is < min_p.
 void min_p(std::vector<Candidate>& c, float min_p);
 void softmax(std::span<Candidate> c);
+
 // draws one candidate via inverse-CDF sampling over c's probabilities;
 // c must already be softmax()'d.
 std::int32_t sample_from(std::span<const Candidate> c, std::mt19937_64& rng);

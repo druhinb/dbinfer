@@ -16,6 +16,7 @@ std::string scalar_to_string(const MetaValue& mv) {
   return std::visit(
       [](const auto& v) -> std::string {
         using T = std::decay_t<decltype(v)>;
+
         if constexpr (std::is_same_v<T, std::string>) {
           return v;
         } else if constexpr (std::is_same_v<T, bool>) {

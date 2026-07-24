@@ -84,6 +84,7 @@ std::size_t ThreadPool::wait_for_work(std::size_t seen) {
     if (g != seen || stop_.load(std::memory_order_acquire)) return g;
     cpu_relax();
   }
+
   std::unique_lock lk(mtx_);
   work_cv_.wait(lk, [&] {
     return stop_.load(std::memory_order_acquire) ||
@@ -114,6 +115,7 @@ void ThreadPool::parallel_for(std::size_t n, std::size_t align, void* ctx, TaskF
     fn(ctx, 0, n);
     return;
   }
+
   {
     // publish the task under the lock so a worker mid-park either sees the new
     // generation before waiting or is woken by the notify below.
@@ -125,8 +127,10 @@ void ThreadPool::parallel_for(std::size_t n, std::size_t align, void* ctx, TaskF
     active_.store(workers_.size(), std::memory_order_relaxed);
     generation_.fetch_add(1, std::memory_order_release);
   }
+
   work_cv_.notify_all();
   run_range(0, count_, fn, ctx, n, align);
+
   // join: spin on the worker count before parking, matching the worker side.
   for (int spins = 0; spins < kSpinBudget; ++spins) {
     if (active_.load(std::memory_order_acquire) == 0) return;

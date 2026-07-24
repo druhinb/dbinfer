@@ -141,6 +141,7 @@ class KVCache {
   bool k_per_channel() const { return k_group_ > 0; }
   bool int8() const { return policy_.dtype == KvDtype::Int8; }
   bool ring() const { return policy_.window > 0; }
+
   // full-context fp32 path, the only one the prefix cache serializes.
   bool dense_f32() const { return !int8() && !ring(); }
   std::size_t n_layers() const { return n_layers_; }
@@ -149,12 +150,14 @@ class KVCache {
   std::size_t prefix_elems(std::size_t prefix_len) const {
     return n_layers_ * prefix_len * pos_stride_;
   }
+
   // packs positions [0, prefix_len) of every layer into k_out and v_out,
   // prefix_elems() floats each. dense fp32 only, caller bounds-checks.
   void copy_prefix_out(std::size_t prefix_len, float* k_out, float* v_out) const;
   // restores positions [0, prefix_len) of every layer from k_in and v_in and
   // sets n_seen to prefix_len. dense fp32 only, caller bounds-checks.
   void copy_prefix_in(std::size_t prefix_len, const float* k_in, const float* v_in);
+
   std::size_t capacity() const { return capacity_; }
   std::size_t n_seen() const { return n_seen_; }
   const KvPolicy& policy() const { return policy_; }

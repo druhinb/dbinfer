@@ -5,20 +5,23 @@
 #include <vector>
 
 #include "tensor/cpu.hpp"
+#include "test_util.hpp"
 
 // every index in [0,n) is covered by exactly one range, for a spread of thread
 // counts, sizes, and alignments including the n<align grain-guard case.
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 void run_case(std::size_t count, std::size_t n, std::size_t align) {
   dbinfer::tensor::ThreadPool pool(count);
   std::vector<int> slots(n, 0);
+
   dbinfer::tensor::parallel_for(pool, n, align, [&](std::size_t begin, std::size_t end) {
     for (std::size_t i = begin; i < end; ++i) slots[i] += 1;
   });
+
   std::size_t bad = 0;
   for (std::size_t i = 0; i < n; ++i)
     if (slots[i] != 1) ++bad;
@@ -42,6 +45,5 @@ int main() {
       for (std::size_t align : aligns) run_case(count, n, align);
 
   std::printf("P=%zu\n", P);
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

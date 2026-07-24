@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -49,29 +50,20 @@ bool is_valid_utf8(const std::string& s) {
   return true;
 }
 
-}  // namespace
+struct ParityCounts {
+  int parity_fail = 0;
+  int roundtrip_fail = 0;
+};
 
-int main() {
-  auto loaded = dbinfer::gguf::load(DBINFER_TEST_GGUF);
-  if (!loaded) {
-    std::printf("FAIL cannot load gguf: %s\n", dbinfer::gguf::to_string(loaded.error()).c_str());
-    return 1;
-  }
-  auto tok = dbinfer::tokenizer::Tokenizer::from_gguf(*loaded);
-  if (!tok) {
-    std::printf("FAIL from_gguf: %s\n", dbinfer::gguf::to_string(tok.error()).c_str());
-    return 1;
-  }
-
-  constexpr std::size_t n =
-      sizeof(dbinfer::tokenizer_fixture::kCases) / sizeof(dbinfer::tokenizer_fixture::kCases[0]);
-
-  int parity_fail = 0, roundtrip_fail = 0;
-  for (std::size_t i = 0; i < n; ++i) {
-    const auto& c = dbinfer::tokenizer_fixture::kCases[i];
+// the decode round-trip is checked only for valid utf-8 cases
+ParityCounts check_parity_and_roundtrip(dbinfer::tokenizer::Tokenizer& tok,
+                                        std::span<const dbinfer::tokenizer_fixture::Case> cases) {
+  ParityCounts counts;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const auto& c = cases[i];
     std::string input = as_bytes(c.input);
 
-    std::vector<std::int32_t> got = tok->encode(input, /*add_special=*/false);
+    std::vector<std::int32_t> got = tok.encode(input, /*add_special=*/false);
     std::vector<std::int32_t> want(c.ids.begin(), c.ids.end());
     if (got != want) {
       std::printf("FAIL parity case %zu (%zu bytes): got %zu ids, want %zu\n", i, input.size(),
@@ -81,10 +73,10 @@ int main() {
       std::printf("\n     want:");
       for (auto x : want) std::printf("%d ", x);
       std::printf("\n");
-      ++parity_fail;
+      ++counts.parity_fail;
     }
 
-    std::string dec = tok->decode(want);
+    std::string dec = tok.decode(want);
     // Valid UTF-8 must round-trip exactly; invalid input round-trips at the byte
     // level too (llama.cpp maps invalid bytes through U+FFFD, so we compare the
     // decode of the recorded ids against that same lossy-but-deterministic form
@@ -92,26 +84,52 @@ int main() {
     if (is_valid_utf8(input)) {
       if (dec != input) {
         std::printf("FAIL roundtrip case %zu: decode mismatch\n", i);
-        ++roundtrip_fail;
+        ++counts.roundtrip_fail;
       }
     }
   }
+  return counts;
+}
 
-  // Byte-level round-trip on the encoder path: decode(encode(x)) reproduces the
-  // encoder's own view of x for every case, valid or not.
-  int enc_roundtrip_fail = 0;
-  for (std::size_t i = 0; i < n; ++i) {
-    const auto& c = dbinfer::tokenizer_fixture::kCases[i];
+// Byte-level round-trip on the encoder path: decode(encode(x)) reproduces the
+// encoder's own view of x for every case, valid or not.
+int check_enc_roundtrip(dbinfer::tokenizer::Tokenizer& tok,
+                        std::span<const dbinfer::tokenizer_fixture::Case> cases) {
+  int fail = 0;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const auto& c = cases[i];
     std::string input = as_bytes(c.input);
-    std::string dec = tok->decode(tok->encode(input, false));
+    std::string dec = tok.decode(tok.encode(input, false));
     if (is_valid_utf8(input) && dec != input) {
       std::printf("FAIL enc-roundtrip case %zu\n", i);
-      ++enc_roundtrip_fail;
+      ++fail;
     }
   }
+  return fail;
+}
 
-  g_failures = parity_fail + roundtrip_fail + enc_roundtrip_fail;
-  std::printf("---\n%zu cases: %d parity fail, %d roundtrip fail, %d enc-roundtrip fail\n", n,
-              parity_fail, roundtrip_fail, enc_roundtrip_fail);
+}  // namespace
+
+int main() {
+  auto loaded = dbinfer::gguf::load(DBINFER_TEST_GGUF);
+  if (!loaded) {
+    std::printf("FAIL cannot load gguf: %s\n", dbinfer::gguf::to_string(loaded.error()).c_str());
+    return 1;
+  }
+
+  auto tok = dbinfer::tokenizer::Tokenizer::from_gguf(*loaded);
+  if (!tok) {
+    std::printf("FAIL from_gguf: %s\n", dbinfer::gguf::to_string(tok.error()).c_str());
+    return 1;
+  }
+
+  const std::span<const dbinfer::tokenizer_fixture::Case> cases(dbinfer::tokenizer_fixture::kCases);
+
+  const ParityCounts counts = check_parity_and_roundtrip(*tok, cases);
+  const int enc_roundtrip_fail = check_enc_roundtrip(*tok, cases);
+
+  g_failures = counts.parity_fail + counts.roundtrip_fail + enc_roundtrip_fail;
+  std::printf("---\n%zu cases: %d parity fail, %d roundtrip fail, %d enc-roundtrip fail\n",
+              cases.size(), counts.parity_fail, counts.roundtrip_fail, enc_roundtrip_fail);
   return g_failures == 0 ? 0 : 1;
 }

@@ -8,22 +8,13 @@
 #include <vector>
 
 #include "model/model.hpp"
+#include "test_util.hpp"
 
 namespace {
 
 using dbinfer::model::KVCache;
 using dbinfer::model::KvPolicy;
-
-int g_failures = 0;
-
-void check(bool ok, const char* what) {
-  if (ok) {
-    std::printf("PASS %s\n", what);
-  } else {
-    std::printf("FAIL %s\n", what);
-    ++g_failures;
-  }
-}
+using dbinfer::test::check;
 
 std::size_t expected_slot(std::size_t pos, std::size_t n_sink, std::size_t window) {
   if (pos < n_sink) return pos;
@@ -104,6 +95,6 @@ int main() {
   run_case(4, 8, 4);    // only sinks resident
   run_case(4, 8, 2);    // fewer than n_sink tokens
   run_case(4, 8, 100);  // many wraps
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+
+  return dbinfer::test::summary();
 }

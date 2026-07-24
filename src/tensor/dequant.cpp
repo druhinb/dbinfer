@@ -225,11 +225,13 @@ void dequant_row(QuantMatrix w, std::size_t row, std::size_t in, float* out) {
       std::copy(r, r + in, out);
       return;
     }
+
     case GgmlType::F16: {
       const std::uint16_t* r = reinterpret_cast<const std::uint16_t*>(w.data) + row * in;
       for (std::size_t i = 0; i < in; ++i) out[i] = f16_to_f32(r[i]);
       return;
     }
+
     case GgmlType::Q8_0:
       dequant_row_q8_0(w.data + row * (in / kBlockSize) * sizeof(BlockQ8_0), in, out);
       return;

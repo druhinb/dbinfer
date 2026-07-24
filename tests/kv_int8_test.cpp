@@ -7,9 +7,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <vector>
 
 #include "model/model.hpp"
+#include "test_util.hpp"
 
 namespace {
 
@@ -17,13 +19,7 @@ using dbinfer::model::kKvBlock;
 using dbinfer::model::KVCache;
 using dbinfer::model::KvDtype;
 using dbinfer::model::KvPolicy;
-
-int g_failures = 0;
-
-void check(bool ok, const char* what) {
-  std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok) ++g_failures;
-}
+using dbinfer::test::check;
 
 struct Lcg {
   std::uint64_t s;
@@ -58,6 +54,61 @@ void test_roundtrip() {
   check(ok, "per-channel key quant/dequant error within one scale step");
 }
 
+void softmax(std::vector<float>& s) {
+  float m = s[0];
+  for (float x : s) m = std::max(m, x);
+
+  float sum = 0.0f;
+  for (float& x : s) {
+    x = std::exp(x - m);
+    sum += x;
+  }
+  for (float& x : s) x /= sum;
+}
+
+std::vector<float> fp32_reference(std::span<const float> q, std::span<const float> k,
+                                  std::span<const float> v, std::size_t hd, std::size_t keys,
+                                  float scale) {
+  std::vector<float> sc(keys);
+  for (std::size_t p = 0; p < keys; ++p) {
+    float dot = 0.0f;
+    for (std::size_t i = 0; i < hd; ++i) dot += q[i] * k[p * hd + i];
+    sc[p] = dot * scale;
+  }
+  softmax(sc);
+
+  std::vector<float> ref(hd, 0.0f);
+  for (std::size_t p = 0; p < keys; ++p)
+    for (std::size_t i = 0; i < hd; ++i) ref[i] += sc[p] * v[p * hd + i];
+  return ref;
+}
+
+std::vector<float> int8_attention(std::span<const float> q, std::span<const float> k,
+                                  std::span<const float> v, std::size_t hd, std::size_t keys,
+                                  float scale) {
+  KVCache kv(1, keys, 1, hd, KvPolicy{0, 0, KvDtype::Int8});
+  for (std::size_t p = 0; p < keys; ++p) kv.append(0, p, k.data() + p * hd, v.data() + p * hd);
+
+  std::vector<float> sc(keys);
+  for (std::size_t p = 0; p < keys; ++p) {
+    const std::int8_t* k8 = kv.key_i8(0, p, 0);
+    const float* ks = kv.key_scales(0, p, 0);
+    float dot = 0.0f;
+    for (std::size_t i = 0; i < hd; ++i) dot += q[i] * ks[i] * static_cast<float>(k8[i]);
+    sc[p] = dot * scale;
+  }
+  softmax(sc);
+
+  std::vector<float> got(hd, 0.0f);
+  for (std::size_t p = 0; p < keys; ++p) {
+    const std::int8_t* v8 = kv.value_i8(0, p, 0);
+    const float* vs = kv.value_scales(0, p, 0);
+    for (std::size_t i = 0; i < hd; ++i)
+      got[i] += sc[p] * vs[i / kKvBlock] * static_cast<float>(v8[i]);
+  }
+  return got;
+}
+
 // int8 self-attention vs fp32. per-channel key and per-block value quant error
 // is bounded by scale/2 = max_abs/254 (~0.4%); softmax and the value mix keep
 // the head output within 1% relative L2 on random inputs.
@@ -71,50 +122,8 @@ void test_attention_matches_fp32() {
 
   const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
 
-  auto softmax = [](std::vector<float>& s) {
-    float m = s[0];
-    for (float x : s) m = std::max(m, x);
-    float sum = 0.0f;
-    for (float& x : s) {
-      x = std::exp(x - m);
-      sum += x;
-    }
-    for (float& x : s) x /= sum;
-  };
-
-  std::vector<float> ref(hd, 0.0f);
-  {
-    std::vector<float> sc(keys);
-    for (std::size_t p = 0; p < keys; ++p) {
-      float dot = 0.0f;
-      for (std::size_t i = 0; i < hd; ++i) dot += q[i] * k[p * hd + i];
-      sc[p] = dot * scale;
-    }
-    softmax(sc);
-    for (std::size_t p = 0; p < keys; ++p)
-      for (std::size_t i = 0; i < hd; ++i) ref[i] += sc[p] * v[p * hd + i];
-  }
-
-  std::vector<float> got(hd, 0.0f);
-  {
-    KVCache kv(1, keys, 1, hd, KvPolicy{0, 0, KvDtype::Int8});
-    for (std::size_t p = 0; p < keys; ++p) kv.append(0, p, k.data() + p * hd, v.data() + p * hd);
-    std::vector<float> sc(keys);
-    for (std::size_t p = 0; p < keys; ++p) {
-      const std::int8_t* k8 = kv.key_i8(0, p, 0);
-      const float* ks = kv.key_scales(0, p, 0);
-      float dot = 0.0f;
-      for (std::size_t i = 0; i < hd; ++i) dot += q[i] * ks[i] * static_cast<float>(k8[i]);
-      sc[p] = dot * scale;
-    }
-    softmax(sc);
-    for (std::size_t p = 0; p < keys; ++p) {
-      const std::int8_t* v8 = kv.value_i8(0, p, 0);
-      const float* vs = kv.value_scales(0, p, 0);
-      for (std::size_t i = 0; i < hd; ++i)
-        got[i] += sc[p] * vs[i / kKvBlock] * static_cast<float>(v8[i]);
-    }
-  }
+  std::vector<float> ref = fp32_reference(q, k, v, hd, keys, scale);
+  std::vector<float> got = int8_attention(q, k, v, hd, keys, scale);
 
   float num = 0.0f, den = 0.0f;
   for (std::size_t i = 0; i < hd; ++i) {
@@ -132,6 +141,6 @@ void test_attention_matches_fp32() {
 int main() {
   test_roundtrip();
   test_attention_matches_fp32();
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+
+  return dbinfer::test::summary();
 }

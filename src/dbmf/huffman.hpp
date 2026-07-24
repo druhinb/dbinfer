@@ -2,7 +2,6 @@
 #define DBINFER_DBMF_HUFFMAN_HPP
 
 #include <cstddef>
-#include <cstdint>
 #include <expected>
 #include <span>
 #include <vector>

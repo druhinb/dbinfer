@@ -250,11 +250,13 @@ expected<Header, Error> read_header(Cursor& c) {
                                 }(),
                             c.path, 0});
   }
+
   auto version = TRY(c.read_scalar<uint32_t>());
   if (version != 3) {
     return unexpected(Error{
         "unsupported GGUF version: found " + std::to_string(version) + ", expected 3", c.path, 4});
   }
+
   auto tensor_count = TRY(c.read_scalar<uint64_t>());
   auto kv_count = TRY(c.read_scalar<uint64_t>());
   return Header{version, tensor_count, kv_count};
@@ -265,6 +267,7 @@ expected<Header, Error> read_header(Cursor& c) {
 expected<vector<std::pair<string, MetaValue>>, Error> read_metadata(Cursor& c, uint64_t kv_count) {
   vector<std::pair<string, MetaValue>> metadata;
   metadata.reserve(static_cast<std::size_t>(std::min<uint64_t>(kv_count, 1024)));
+
   for (uint64_t i = 0; i < kv_count; ++i) {
     auto key = TRY(c.read_string());
     uint64_t type_at = c.pos;
@@ -287,6 +290,7 @@ expected<uint64_t, Error> resolve_alignment(const GgufFile& f, const string& pat
   if (am == nullptr) {
     return 32;
   }
+
   const auto* a = get_if<uint32_t>(&am->value);
   if (a == nullptr) {
     return unexpected(Error{"general.alignment must be UINT32", path, 0});
@@ -348,6 +352,7 @@ expected<vector<TensorInfo>, Error> read_tensor_infos(Cursor& c, uint64_t tensor
             Error{"tensor '" + info.name + "' element count overflows uint64", c.path, type_at});
       }
     }
+
     TypeInfo tr = type_info(info.type);
     if (nelem % tr.block_size != 0) {
       return unexpected(Error{"tensor '" + info.name + "' element count " + std::to_string(nelem) +
@@ -378,6 +383,7 @@ expected<void, Error> bind_tensor_data(vector<TensorInfo>& tensors, const std::b
                                   " not aligned to " + std::to_string(alignment),
                               path, info.offset});
     }
+
     uint64_t data_off;
     uint64_t end;
     if (__builtin_add_overflow(data_section, info.offset, &data_off) ||

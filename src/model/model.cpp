@@ -38,16 +38,20 @@ void AlignedF32::assign(std::size_t n, float value) {
   std::free(ptr_);
   ptr_ = nullptr;
   size_ = 0;
+
   if (n == 0) return;
+
   void* p = nullptr;
   // 16384 is the Apple Silicon page newBufferWithBytesNoCopy wraps zero-copy.
   // rounding the length to a page lets the backend wrap the whole span safely.
   constexpr std::size_t kPage = 16384;
   const std::size_t bytes = ((n * sizeof(float) + kPage - 1) / kPage) * kPage;
+
   if (posix_memalign(&p, kPage, bytes) != 0 || p == nullptr) {
     std::fprintf(stderr, "fatal: KV cache allocation of %zu floats failed\n", n);
     std::abort();
   }
+
   ptr_ = static_cast<float*>(p);
   std::fill(ptr_, ptr_ + n, value);
   size_ = n;
@@ -129,6 +133,7 @@ std::optional<std::unexpected<Error>> bind_weight(const GgufFile& file, const st
         name + " shape mismatch: expected [" + std::to_string(out) + ", " + std::to_string(in) +
             "], found [" + std::to_string(t->shape[0]) + ", " + std::to_string(t->shape[1]) + "]",
         "", t->offset});
+
   const BlockLayout bl = block_layout(t->type);
   if (in % bl.elems != 0)
     return std::unexpected(
@@ -139,11 +144,13 @@ std::optional<std::unexpected<Error>> bind_weight(const GgufFile& file, const st
   if (elems % bl.elems != 0)
     return std::unexpected(
         Error{name + " out*in not a multiple of " + std::to_string(bl.elems), "", t->offset});
+
   const std::size_t expect = (elems / bl.elems) * bl.bytes;
   if (t->nbytes != expect)
     return std::unexpected(Error{name + " nbytes mismatch: expected " + std::to_string(expect) +
                                      ", found " + std::to_string(t->nbytes),
                                  "", t->offset});
+
   dst = tensor::QuantMatrix{t->data, t->type};
   return std::nullopt;
 }
@@ -197,6 +204,7 @@ std::expected<Config, Error> parse_config(const GgufFile& file) {
     dst = *v;
     return std::nullopt;
   };
+
   auto req_f32 = [&](const std::string& key, float& dst) -> std::optional<std::unexpected<Error>> {
     const MetaValue* mv = file.find_meta(key);
     if (mv == nullptr) return std::unexpected(Error{key + " missing", "", 0});
@@ -208,6 +216,7 @@ std::expected<Config, Error> parse_config(const GgufFile& file) {
 
   Config cfg;
   std::uint64_t u = 0;
+
   if (auto e = req_u64(arch + ".block_count", u)) return std::move(*e);
   cfg.n_layers = u;
   if (auto e = req_u64(arch + ".embedding_length", u)) return std::move(*e);
@@ -262,9 +271,11 @@ KVCache::KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_hea
     v_.assign(n_layers * layer_stride_, 0.0f);
     return;
   }
+
   k8_.assign(n_layers * layer_stride_, 0);
   v8_.assign(n_layers * layer_stride_, 0);
   v_scale_.assign(n_layers * scale_stride_, 0.0f);
+
   // the ring path evicts tokens, so per-channel groups cannot stay coherent
   // across a slot's lifetime; keep its keys per-block. the dense path groups
   // keys per-channel over kKvKGroup tokens and pins n_sink initial tokens fp32.
@@ -272,6 +283,7 @@ KVCache::KVCache(std::size_t n_layers, std::size_t max_seq, std::size_t n_kv_hea
     k_scale_.assign(n_layers * scale_stride_, 0.0f);
     return;
   }
+
   k_group_ = kKvKGroup;
   n_kgroups_ = (capacity_ + k_group_ - 1) / k_group_;
   k_scale_stride_ = n_kgroups_ * n_kv_heads * head_dim;
@@ -318,6 +330,7 @@ void KVCache::requantize_kgroup(std::size_t layer, std::size_t g, std::size_t wi
   const std::size_t first = g * k_group_;
   float* sc_base = k_scale_.data() + layer * k_scale_stride_ + g * n_kv_heads_ * head_dim_;
   const float* raw_base = k_raw_.data() + layer * k_group_ * pos_stride_;
+
   for (std::size_t kh = 0; kh < n_kv_heads_; ++kh) {
     float* sc = sc_base + kh * head_dim_;
     for (std::size_t c = 0; c < head_dim_; ++c) sc[c] = 0.0f;
@@ -347,6 +360,7 @@ void KVCache::append(std::size_t layer, std::size_t pos, const float* k, const f
     const std::size_t g = pos / k_group_;
     float* raw = k_raw_.data() + layer * k_group_ * pos_stride_ + within * pos_stride_;
     for (std::size_t i = 0; i < pos_stride_; ++i) raw[i] = k[i];
+
     if (pos < n_sink_) {
       float* ks = k_sink_.data() + layer * n_sink_ * pos_stride_ + pos * pos_stride_;
       float* vs = v_sink_.data() + layer * n_sink_ * pos_stride_ + pos * pos_stride_;
@@ -363,6 +377,7 @@ void KVCache::append(std::size_t layer, std::size_t pos, const float* k, const f
                    v_scale_.data() + sbase + kh * n_blocks_);
       }
     }
+
     requantize_kgroup(layer, g, within);
     n_seen_ = pos + 1;
     return;
@@ -370,6 +385,7 @@ void KVCache::append(std::size_t layer, std::size_t pos, const float* k, const f
 
   const std::size_t slot = ring() ? slot_for(pos) : pos;
   const std::size_t base = layer * layer_stride_ + slot * pos_stride_;
+
   if (policy_.dtype == KvDtype::Int8) {
     const std::size_t sbase = layer * scale_stride_ + slot * n_kv_heads_ * n_blocks_;
     for (std::size_t kh = 0; kh < n_kv_heads_; ++kh) {
@@ -481,6 +497,7 @@ std::expected<void, Error> Model::bind_weights(const GgufFile& file) {
   for (std::size_t l = 0; l < cfg_.n_layers; ++l) {
     LayerWeights& L = layers_[l];
     const std::string p = "blk." + std::to_string(l) + ".";
+
     if (auto e = bind_normw(file, p + "attn_norm.weight", dim, L.attn_norm)) return std::move(*e);
     if (auto e = bind_weight(file, p + "attn_q.weight", cfg_.n_heads * hd, dim, L.attn_q))
       return std::move(*e);
@@ -496,6 +513,7 @@ std::expected<void, Error> Model::bind_weights(const GgufFile& file) {
       return std::move(*e);
     if (auto e = bind_optbias(file, p + "attn_v.bias", cfg_.n_kv_heads * hd, L.attn_v_bias))
       return std::move(*e);
+
     if (auto e = bind_normw(file, p + "ffn_norm.weight", dim, L.ffn_norm)) return std::move(*e);
     if (auto e = bind_weight(file, p + "ffn_gate.weight", ff, dim, L.ffn_gate))
       return std::move(*e);
@@ -516,6 +534,7 @@ std::expected<Model, Error> Model::load(const GgufFile& file) {
   const std::size_t dim = cfg.embedding_length;
   const std::size_t ff = cfg.ffn_length;
   const std::size_t hd = cfg.head_dim;
+
   m.x_.assign(dim, 0.0f);
   m.normed_.assign(dim, 0.0f);
   m.q_.assign(cfg.n_heads * hd, 0.0f);
@@ -552,18 +571,22 @@ void Model::attend_dense_f32(std::size_t layer, std::int32_t pos, KVCache& kv, f
   const std::size_t gqa = cfg_.gqa_factor;
   const std::size_t last = static_cast<std::size_t>(pos);
   const std::size_t cl = cfg_.context_length;
+
   parallel_for(thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
     for (std::size_t h = hbegin; h < hend; ++h) {
       const std::size_t kh = h / gqa;
       const float* qh = q_.data() + h * hd;
       float* sc = scores_.data() + h * cl;
+
       for (std::size_t pp = 0; pp <= last; ++pp) {
         const float* kp = kv.key(layer, pp, kh);
         float dot = 0.0f;
         for (std::size_t i = 0; i < hd; ++i) dot += qh[i] * kp[i];
         sc[pp] = dot * scale;
       }
+
       softmax(sc, sc, last + 1);
+
       float* outh = attn_.data() + h * hd;
       for (std::size_t i = 0; i < hd; ++i) outh[i] = 0.0f;
       for (std::size_t pp = 0; pp <= last; ++pp) {
@@ -571,6 +594,7 @@ void Model::attend_dense_f32(std::size_t layer, std::int32_t pos, KVCache& kv, f
         const float w = sc[pp];
         for (std::size_t i = 0; i < hd; ++i) outh[i] += w * vp[i];
       }
+
       if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0) {
         for (std::size_t i = 0; i < hd; ++i) dbg->attn_head0[i] = outh[i];
       }
@@ -586,12 +610,14 @@ void Model::attend_dense_int8(std::size_t layer, std::int32_t pos, KVCache& kv, 
   const std::size_t last = static_cast<std::size_t>(pos);
   const std::size_t cl = cfg_.context_length;
   const std::size_t n_sink = kv.n_sink_fp32();
+
   parallel_for(thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
     for (std::size_t h = hbegin; h < hend; ++h) {
       const std::size_t kh = h / gqa;
       const float* qh = q_.data() + h * hd;
       float* sc = scores_.data() + h * cl;
       const std::size_t nb = kv.n_blocks();
+
       for (std::size_t pp = 0; pp <= last; ++pp) {
         float dot = 0.0f;
         if (pp < n_sink) {
@@ -604,7 +630,9 @@ void Model::attend_dense_int8(std::size_t layer, std::int32_t pos, KVCache& kv, 
         }
         sc[pp] = dot * scale;
       }
+
       softmax(sc, sc, last + 1);
+
       float* outh = attn_.data() + h * hd;
       for (std::size_t i = 0; i < hd; ++i) outh[i] = 0.0f;
       for (std::size_t pp = 0; pp <= last; ++pp) {
@@ -623,6 +651,7 @@ void Model::attend_dense_int8(std::size_t layer, std::int32_t pos, KVCache& kv, 
           for (std::size_t i = start; i < end; ++i) outh[i] += wv * static_cast<float>(vp[i]);
         }
       }
+
       if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0) {
         for (std::size_t i = 0; i < hd; ++i) dbg->attn_head0[i] = outh[i];
       }
@@ -645,12 +674,14 @@ void Model::attend_ring(std::size_t layer, std::int32_t pos, KVCache& kv, float 
   const std::size_t nb = kv.n_blocks();
   const KVCache::Resident* res = resident_.data();
   const bool i8 = kv.int8();
+
   parallel_for(thread_pool(), nh, 1, [&](std::size_t hbegin, std::size_t hend) {
     std::vector<float> kbuf(hd, 0.0f);
     for (std::size_t h = hbegin; h < hend; ++h) {
       const std::size_t kh = h / gqa;
       const float* qh = q_.data() + h * hd;
       float* sc = scores_.data() + h * stride;
+
       for (std::size_t r = 0; r < n_res; ++r) {
         if (i8) {
           const std::int8_t* kp = kv.key_i8(layer, res[r].slot, kh);
@@ -667,7 +698,9 @@ void Model::attend_ring(std::size_t layer, std::int32_t pos, KVCache& kv, float 
         for (std::size_t i = 0; i < hd; ++i) dot += qh[i] * kbuf[i];
         sc[r] = dot * scale;
       }
+
       softmax(sc, sc, n_res);
+
       float* outh = attn_.data() + h * hd;
       for (std::size_t i = 0; i < hd; ++i) outh[i] = 0.0f;
       for (std::size_t r = 0; r < n_res; ++r) {
@@ -686,6 +719,7 @@ void Model::attend_ring(std::size_t layer, std::int32_t pos, KVCache& kv, float 
           for (std::size_t i = 0; i < hd; ++i) outh[i] += w * vp[i];
         }
       }
+
       if (dbg != nullptr && dbg->attn_head0 != nullptr && h == 0) {
         for (std::size_t i = 0; i < hd; ++i) dbg->attn_head0[i] = outh[i];
       }
@@ -709,6 +743,7 @@ void Model::decode_layer(std::size_t layer, float* x, std::int32_t pos, KVCache&
       {L.attn_v, v_.data(), nkv * hd},
   };
   matvec_quant_fused(qkv, 3, normed_.data(), dim);
+
   if (L.attn_q_bias) {
     for (std::size_t i = 0; i < nh * hd; ++i) q_[i] += L.attn_q_bias[i];
   }
@@ -830,6 +865,7 @@ bool Model::set_gpu_offload(backend::Backend* backend, std::size_t n_layers) {
     g.rms_eps = cfg_.rms_eps;
     g.rope_theta = cfg_.rope_theta;
   }
+
   // the on-device final norm and lm_head only run when every block is offloaded
   // and the head dtype is one the Metal matvec reads. otherwise the CPU keeps
   // the tail and a null head disables decode_token_full.
@@ -861,6 +897,7 @@ const float* Model::forward(std::int32_t token, std::int32_t pos) {
   const std::size_t dim = cfg_.embedding_length;
   embed(token, x_.data());
   const bool offload = backend_ != nullptr && gpu_layers_ > 0 && kv_.dense_f32();
+
   if (offload && gpu_head_) {
     if (auto r = backend_->decode_token_full(x_.data(), pos)) {
       kv_.mark_position(static_cast<std::size_t>(pos));
@@ -873,6 +910,7 @@ const float* Model::forward(std::int32_t token, std::int32_t pos) {
     for (std::size_t l = offload ? gpu_layers_ : 0; l < cfg_.n_layers; ++l)
       decode_layer(l, x_.data(), pos, kv_, nullptr);
   }
+
   tensor::rmsnorm(x_.data(), output_norm_, cfg_.rms_eps, normed_.data(), 1, dim);
   tensor::matvec_quant(lm_head_, normed_.data(), logits_.data(), cfg_.vocab_size, dim);
   return logits_.data();
@@ -898,6 +936,7 @@ void Model::decode_layer_chunk(std::size_t layer, float* x, std::int32_t pos0, s
     float* qc = s.q.data() + c * nh * hd;
     float* kc = s.k.data() + c * nkv * hd;
     float* vc = s.v.data() + c * nkv * hd;
+
     if (L.attn_q_bias) {
       for (std::size_t i = 0; i < nh * hd; ++i) qc[i] += L.attn_q_bias[i];
     }
@@ -907,6 +946,7 @@ void Model::decode_layer_chunk(std::size_t layer, float* x, std::int32_t pos0, s
     if (L.attn_v_bias) {
       for (std::size_t i = 0; i < nkv * hd; ++i) vc[i] += L.attn_v_bias[i];
     }
+
     const std::int32_t p = pos0 + static_cast<std::int32_t>(c);
     tensor::rope(qc, &p, cfg_.rope_theta, nh, 1, hd);
     tensor::rope(kc, &p, cfg_.rope_theta, nkv, 1, hd);

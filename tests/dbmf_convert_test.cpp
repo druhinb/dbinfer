@@ -12,6 +12,7 @@
 #include "dbmf/xxhash.hpp"
 #include "gguf/gguf.hpp"
 #include "model/model.hpp"
+#include "test_util.hpp"
 
 // dbmf gate: a converted model reproduces the gguf original's logits to the
 // bit, for q8_0 raw, f16 raw, and f16 compressed. plus round-trip, dedup,
@@ -19,7 +20,7 @@
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 void fail(const std::string& msg) {
   std::printf("FAIL %s\n", msg.c_str());
@@ -166,20 +167,24 @@ dbinfer::gguf::GgufFile make_synthetic(std::vector<Owned>& store) {
 void roundtrip_and_dedup(std::vector<Owned>& store) {
   dbinfer::gguf::GgufFile src = make_synthetic(store);
   const std::string out = dir() + "synthetic.dbmf";
+
   if (auto ok = dbinfer::dbmf::convert(src, out); !ok) {
     fail("synthetic convert: " + dbinfer::gguf::to_string(ok.error()));
     return;
   }
+
   auto dloaded = dbinfer::dbmf::read(out, {/*verify=*/true});
   if (!dloaded) {
     fail("synthetic read: " + dbinfer::gguf::to_string(dloaded.error()));
     return;
   }
+
   const dbinfer::gguf::GgufFile& df = *dloaded;
   if (df.tensors.size() != src.tensors.size()) {
     fail("synthetic tensor count mismatch");
     return;
   }
+
   for (const auto& st : src.tensors) {
     const dbinfer::gguf::TensorInfo* dt = nullptr;
     for (const auto& t : df.tensors)
@@ -190,6 +195,7 @@ void roundtrip_and_dedup(std::vector<Owned>& store) {
       return;
     }
   }
+
   // token_embd and its twin must share one data offset after dedup.
   const dbinfer::gguf::TensorInfo* e = nullptr;
   const dbinfer::gguf::TensorInfo* o = nullptr;
@@ -197,12 +203,70 @@ void roundtrip_and_dedup(std::vector<Owned>& store) {
     if (t.name == "token_embd.weight") e = &t;
     if (t.name == "output.weight") o = &t;
   }
+
   if (e == nullptr || o == nullptr || e->offset != o->offset || e->data != o->data) {
     fail("dedup did not share identical tensors");
     return;
   }
+
   std::printf("PASS synthetic     round-trip + dedup (tied tensor shares offset %llu)\n",
               static_cast<std::uint64_t>(e->offset));
+}
+
+// 1. flipped tensor byte, named in the error.
+void check_flipped_byte(const std::vector<std::byte>& bytes, std::uint64_t off,
+                        const std::string& target) {
+  auto flipped = bytes;
+  flipped[static_cast<std::size_t>(off)] ^= std::byte{0xFF};
+  const std::string fpath = dir() + "corrupt_flip.dbmf";
+  write_file(fpath, flipped);
+  auto r1 = dbinfer::dbmf::read(fpath, {/*verify=*/true});
+  if (r1 || r1.error().message.find(target) == std::string::npos) {
+    fail("flipped byte not caught with tensor name");
+  } else {
+    std::printf("PASS corruption    flipped byte -> %s\n",
+                dbinfer::gguf::to_string(r1.error()).c_str());
+  }
+}
+
+// 2. wrong magic.
+void check_wrong_magic(const std::vector<std::byte>& bytes) {
+  auto badmagic = bytes;
+  badmagic[0] = std::byte{0x00};
+  const std::string mpath = dir() + "corrupt_magic.dbmf";
+  write_file(mpath, badmagic);
+  auto r2 = dbinfer::dbmf::read(mpath);
+  if (r2)
+    fail("wrong magic accepted");
+  else
+    std::printf("PASS corruption    wrong magic -> %s\n",
+                dbinfer::gguf::to_string(r2.error()).c_str());
+}
+
+// 3. truncated file.
+void check_truncated_file(const std::vector<std::byte>& bytes) {
+  const std::string tpath = dir() + "corrupt_trunc.dbmf";
+  write_file(tpath, std::span<const std::byte>(bytes.data(), bytes.size() / 2));
+  auto r3 = dbinfer::dbmf::read(tpath);
+  if (r3)
+    fail("truncated file accepted");
+  else
+    std::printf("PASS corruption    truncated -> %s\n",
+                dbinfer::gguf::to_string(r3.error()).c_str());
+}
+
+// 4. corrupted header field caught by the header checksum.
+void check_corrupted_header(const std::vector<std::byte>& bytes) {
+  auto badhdr = bytes;
+  badhdr[16] ^= std::byte{0x01};  // tensor_count low byte
+  const std::string hpath = dir() + "corrupt_hdr.dbmf";
+  write_file(hpath, badhdr);
+  auto r4 = dbinfer::dbmf::read(hpath);
+  if (r4)
+    fail("corrupted header accepted");
+  else
+    std::printf("PASS corruption    header field -> %s\n",
+                dbinfer::gguf::to_string(r4.error()).c_str());
 }
 
 void corruption_gate(std::vector<Owned>& store) {
@@ -217,6 +281,7 @@ void corruption_gate(std::vector<Owned>& store) {
     fail("corruption base read: " + dbinfer::gguf::to_string(base.error()));
     return;
   }
+
   // locate the q8 tensor's data offset to flip a byte inside it.
   std::uint64_t off = 0;
   std::string target;
@@ -227,52 +292,10 @@ void corruption_gate(std::vector<Owned>& store) {
     }
   std::vector<std::byte> bytes = read_file(good);
 
-  // 1. flipped tensor byte, named in the error.
-  auto flipped = bytes;
-  flipped[static_cast<std::size_t>(off)] ^= std::byte{0xFF};
-  const std::string fpath = dir() + "corrupt_flip.dbmf";
-  write_file(fpath, flipped);
-  auto r1 = dbinfer::dbmf::read(fpath, {/*verify=*/true});
-  if (r1 || r1.error().message.find(target) == std::string::npos) {
-    fail("flipped byte not caught with tensor name");
-  } else {
-    std::printf("PASS corruption    flipped byte -> %s\n",
-                dbinfer::gguf::to_string(r1.error()).c_str());
-  }
-
-  // 2. wrong magic.
-  auto badmagic = bytes;
-  badmagic[0] = std::byte{0x00};
-  const std::string mpath = dir() + "corrupt_magic.dbmf";
-  write_file(mpath, badmagic);
-  auto r2 = dbinfer::dbmf::read(mpath);
-  if (r2)
-    fail("wrong magic accepted");
-  else
-    std::printf("PASS corruption    wrong magic -> %s\n",
-                dbinfer::gguf::to_string(r2.error()).c_str());
-
-  // 3. truncated file.
-  const std::string tpath = dir() + "corrupt_trunc.dbmf";
-  write_file(tpath, std::span<const std::byte>(bytes.data(), bytes.size() / 2));
-  auto r3 = dbinfer::dbmf::read(tpath);
-  if (r3)
-    fail("truncated file accepted");
-  else
-    std::printf("PASS corruption    truncated -> %s\n",
-                dbinfer::gguf::to_string(r3.error()).c_str());
-
-  // 4. corrupted header field caught by the header checksum.
-  auto badhdr = bytes;
-  badhdr[16] ^= std::byte{0x01};  // tensor_count low byte
-  const std::string hpath = dir() + "corrupt_hdr.dbmf";
-  write_file(hpath, badhdr);
-  auto r4 = dbinfer::dbmf::read(hpath);
-  if (r4)
-    fail("corrupted header accepted");
-  else
-    std::printf("PASS corruption    header field -> %s\n",
-                dbinfer::gguf::to_string(r4.error()).c_str());
+  check_flipped_byte(bytes, off, target);
+  check_wrong_magic(bytes);
+  check_truncated_file(bytes);
+  check_corrupted_header(bytes);
 }
 
 // random single-byte mutations of a valid file must never crash the parser.
@@ -356,6 +379,5 @@ int main() {
     fuzz_parser(store);
   }
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

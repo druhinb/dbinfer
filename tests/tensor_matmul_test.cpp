@@ -7,19 +7,11 @@
 #include <vector>
 
 #include "tensor/matmul.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
-
-void check(bool ok, const char* what) {
-  if (ok) {
-    std::printf("PASS %s\n", what);
-  } else {
-    std::printf("FAIL %s\n", what);
-    ++g_failures;
-  }
-}
+using dbinfer::test::check;
 
 struct Lcg {
   std::uint64_t s;
@@ -106,6 +98,5 @@ int main() {
   test_matvec_rectangular();
   test_matmul_multirow();
   test_numpy_fixture();
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

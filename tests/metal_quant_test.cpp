@@ -16,10 +16,12 @@
 #include "tensor/dequant.hpp"
 #include "tensor/matmul.hpp"
 #include "tensor/matmul_neon.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::check;
+using dbinfer::test::g_failures;
 
 struct Lcg {
   std::uint64_t s;
@@ -33,11 +35,6 @@ struct Lcg {
     return static_cast<std::uint8_t>(s >> 40);
   }
 };
-
-void check(bool ok, const char* what) {
-  std::printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok) ++g_failures;
-}
 
 using dbinfer::tensor::BlockQ8_0;
 using dbinfer::tensor::kBlockSize;
@@ -78,9 +75,11 @@ void test_quant(dbinfer::backend::Backend& metal, std::size_t rows, std::size_t 
   const std::size_t nb = in / kBlockSize;
   std::vector<float> a = rand_activation(rng, rows, in);
   std::vector<std::byte> cpu(rows * nb * sizeof(BlockQ8_0));
+
   for (std::size_t r = 0; r < rows; ++r)
     dbinfer::tensor::quantize_row_q8_0(a.data() + r * in, in,
                                        cpu.data() + r * nb * sizeof(BlockQ8_0));
+
   std::vector<std::byte> gpu(rows * nb * sizeof(BlockQ8_0));
   auto res = metal.quantize_q8_0(a.data(), rows, in, gpu.data());
   if (!res) {
@@ -88,6 +87,7 @@ void test_quant(dbinfer::backend::Backend& metal, std::size_t rows, std::size_t 
     ++g_failures;
     return;
   }
+
   const bool ok = std::memcmp(cpu.data(), gpu.data(), cpu.size()) == 0;
   std::printf("  quant rows=%zu in=%zu %s\n", rows, in, ok ? "bit-exact" : "MISMATCH");
   if (!ok) ++g_failures;
@@ -185,6 +185,7 @@ void test_group(dbinfer::backend::Backend& metal, WeightType type, std::vector<s
     else
       r = metal.mul_mat_f16(reinterpret_cast<const std::uint16_t*>(wp[i]), a.data(), sep[i].data(),
                             1, outs[i], in);
+
     if (!r) {
       std::printf("  group separate error: %s\n", r.error().message.c_str());
       ++g_failures;
@@ -242,6 +243,5 @@ int main() {
   }
 
   check(g_failures == 0, "GPU quant matvec and activation quant bitwise-identical to CPU scalar");
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

@@ -42,16 +42,18 @@ std::uint64_t merge_round(std::uint64_t acc, std::uint64_t val) {
 
 }  // namespace
 
-std::uint64_t xxhash64(const std::byte* p, std::size_t len, std::uint64_t seed) {
-  const std::byte* const end = p + len;
+std::uint64_t xxhash64(std::span<const std::byte> data, std::uint64_t seed) {
+  const std::byte* p = data.data();
+  const std::byte* const end = p + data.size();
   std::uint64_t h;
 
-  if (len >= 32) {
+  if (data.size() >= 32) {
     const std::byte* const limit = end - 32;
     std::uint64_t v1 = seed + kP1 + kP2;
     std::uint64_t v2 = seed + kP2;
     std::uint64_t v3 = seed;
     std::uint64_t v4 = seed - kP1;
+
     do {
       v1 = round64(v1, read64(p));
       p += 8;
@@ -62,6 +64,7 @@ std::uint64_t xxhash64(const std::byte* p, std::size_t len, std::uint64_t seed) 
       v4 = round64(v4, read64(p));
       p += 8;
     } while (p <= limit);
+
     h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) + rotl(v4, 18);
     h = merge_round(h, v1);
     h = merge_round(h, v2);
@@ -71,7 +74,7 @@ std::uint64_t xxhash64(const std::byte* p, std::size_t len, std::uint64_t seed) 
     h = seed + kP5;
   }
 
-  h += static_cast<std::uint64_t>(len);
+  h += static_cast<std::uint64_t>(data.size());
 
   while (p + 8 <= end) {
     h ^= round64(0, read64(p));

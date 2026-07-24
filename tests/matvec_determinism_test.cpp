@@ -8,6 +8,7 @@
 #include "model/model.hpp"
 #include "tensor/cpu.hpp"
 #include "tensor/thread_pool.hpp"
+#include "test_util.hpp"
 
 // the fp32 matvec/attention parallelization must be bitwise-identical to the
 // single-thread path. runs a fixed prompt through a fresh model at one thread
@@ -15,7 +16,7 @@
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 std::vector<std::int32_t> make_prompt() {
   std::vector<std::int32_t> ids;
@@ -33,12 +34,14 @@ std::vector<float> run_forward(const char* path, std::size_t threads,
     ++g_failures;
     return {};
   }
+
   auto mret = dbinfer::model::Model::load(*loaded);
   if (!mret) {
     std::printf("FAIL model load %s: %s\n", path, dbinfer::gguf::to_string(mret.error()).c_str());
     ++g_failures;
     return {};
   }
+
   dbinfer::model::Model& model = *mret;
   const std::size_t vocab = model.config().vocab_size;
   std::vector<float> out(ids.size() * vocab);
@@ -54,6 +57,7 @@ void check(const char* label, const char* path, const std::vector<std::int32_t>&
   std::vector<float> single = run_forward(path, 1, ids);
   std::vector<float> multi = run_forward(path, P, ids);
   if (single.empty() || multi.empty()) return;
+
   if (single.size() != multi.size() ||
       std::memcmp(single.data(), multi.data(), single.size() * sizeof(float)) != 0) {
     std::size_t diffs = 0;
@@ -64,6 +68,7 @@ void check(const char* label, const char* path, const std::vector<std::int32_t>&
     ++g_failures;
     return;
   }
+
   std::printf("PASS %-6s bitwise identical over %zu logits, threads 1 vs %zu\n", label,
               single.size(), P);
 }
@@ -90,6 +95,5 @@ int main() {
   check("Q4_K_M", DBINFER_DET_Q4K, ids, P);
 #endif
 
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

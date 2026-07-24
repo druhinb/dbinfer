@@ -18,10 +18,11 @@
 #include "tensor/matmul.hpp"
 #include "tensor/matmul_neon.hpp"
 #include "tensor/ops.hpp"
+#include "test_util.hpp"
 
 namespace {
 
-int g_failures = 0;
+using dbinfer::test::g_failures;
 
 struct Lcg {
   std::uint64_t s;
@@ -92,6 +93,63 @@ void cpu_tail_quant(void (*matvec)(const std::byte*, const BlockQ8_0*, float*, s
   matvec(w, reinterpret_cast<const BlockQ8_0*>(xq.data()), logits.data(), out, in);
 }
 
+void test_rmsnorm(dbinfer::backend::Backend& metal, const std::vector<float>& h,
+                  const std::vector<float>& wn, float eps, std::size_t dim,
+                  const std::vector<float>& normed_cpu, std::vector<float>& normed_gpu) {
+  if (auto r = metal.rmsnorm(h.data(), wn.data(), eps, normed_gpu.data(), 1, dim); !r) {
+    std::printf("FAIL rmsnorm error: %s\n", r.error().message.c_str());
+    ++g_failures;
+  }
+  check(max_abs_err(normed_cpu, normed_gpu) <= 1e-4f, "final rmsnorm GPU vs CPU within 1e-4",
+        max_abs_err(normed_cpu, normed_gpu));
+}
+
+void test_q8_lm_head(dbinfer::backend::Backend& metal, Lcg& rng,
+                     const std::vector<float>& normed_cpu, const std::vector<float>& normed_gpu,
+                     std::size_t vocab, std::size_t dim) {
+  std::vector<std::byte> w = quant_weight_q8(rng, vocab, dim);
+  std::vector<float> cpu_same, gpu_same;
+  cpu_tail_quant(dbinfer::tensor::matvec_q8_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_same);
+  gpu_same.assign(vocab, 0.0f);
+  if (auto r = metal.mul_mat_q8_0(w.data(), normed_cpu.data(), gpu_same.data(), 1, vocab, dim); !r)
+    std::printf("  q8 error: %s\n", r.error().message.c_str());
+  const bool bitwise = std::memcmp(cpu_same.data(), gpu_same.data(), vocab * sizeof(float)) == 0;
+  std::printf("%s Q8_0 lm_head bitwise vs CPU on same normed\n", bitwise ? "PASS" : "FAIL");
+  if (!bitwise) ++g_failures;
+
+  std::vector<float> cpu_tail, gpu_tail(vocab, 0.0f);
+  cpu_tail_quant(dbinfer::tensor::matvec_q8_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_tail);
+  if (auto r = metal.mul_mat_q8_0(w.data(), normed_gpu.data(), gpu_tail.data(), 1, vocab, dim); !r)
+    std::printf("  q8 tail error: %s\n", r.error().message.c_str());
+  const float e = max_abs_err(cpu_tail, gpu_tail);
+  check(e <= 1e-4f, "Q8_0 tail (rmsnorm+lm_head) GPU vs CPU within 1e-4", e);
+}
+
+void test_q4_lm_head(dbinfer::backend::Backend& metal, Lcg& rng,
+                     const std::vector<float>& normed_cpu, std::size_t vocab, std::size_t dim) {
+  std::vector<std::byte> w = rand_weight_q4(rng, vocab, dim);
+  std::vector<float> cpu_same(vocab, 0.0f), gpu_same(vocab, 0.0f);
+  cpu_tail_quant(dbinfer::tensor::matvec_q4_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_same);
+  if (auto r = metal.mul_mat_q4_0(w.data(), normed_cpu.data(), gpu_same.data(), 1, vocab, dim); !r)
+    std::printf("  q4 error: %s\n", r.error().message.c_str());
+  const bool bitwise = std::memcmp(cpu_same.data(), gpu_same.data(), vocab * sizeof(float)) == 0;
+  std::printf("%s Q4_0 lm_head bitwise vs CPU on same normed\n", bitwise ? "PASS" : "FAIL");
+  if (!bitwise) ++g_failures;
+}
+
+// f16 lm_head, tolerance only: the f16 matvec reorders its fold.
+void test_f16_lm_head(dbinfer::backend::Backend& metal, Lcg& rng,
+                      const std::vector<float>& normed_cpu, const std::vector<float>& normed_gpu,
+                      std::size_t vocab, std::size_t dim) {
+  std::vector<std::uint16_t> w = rand_weight_f16(rng, vocab, dim);
+  std::vector<float> cpu(vocab, 0.0f), gpu(vocab, 0.0f);
+  dbinfer::tensor::matvec_f16(w.data(), normed_cpu.data(), cpu.data(), vocab, dim);
+  if (auto r = metal.mul_mat_f16(w.data(), normed_gpu.data(), gpu.data(), 1, vocab, dim); !r)
+    std::printf("  f16 error: %s\n", r.error().message.c_str());
+  const float e = max_abs_err(cpu, gpu);
+  check(e <= 1e-3f, "F16 tail (rmsnorm+lm_head) GPU vs CPU within 1e-3", e);
+}
+
 }  // namespace
 
 int main() {
@@ -114,59 +172,11 @@ int main() {
   std::vector<float> normed_cpu(dim, 0.0f);
   dbinfer::tensor::rmsnorm(h.data(), wn.data(), eps, normed_cpu.data(), 1, dim);
   std::vector<float> normed_gpu(dim, 0.0f);
-  if (auto r = metal->rmsnorm(h.data(), wn.data(), eps, normed_gpu.data(), 1, dim); !r) {
-    std::printf("FAIL rmsnorm error: %s\n", r.error().message.c_str());
-    ++g_failures;
-  }
-  check(max_abs_err(normed_cpu, normed_gpu) <= 1e-4f, "final rmsnorm GPU vs CPU within 1e-4",
-        max_abs_err(normed_cpu, normed_gpu));
 
-  // Q8_0 lm_head.
-  {
-    std::vector<std::byte> w = quant_weight_q8(rng, vocab, dim);
-    std::vector<float> cpu_same, gpu_same;
-    cpu_tail_quant(dbinfer::tensor::matvec_q8_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_same);
-    gpu_same.assign(vocab, 0.0f);
-    if (auto r = metal->mul_mat_q8_0(w.data(), normed_cpu.data(), gpu_same.data(), 1, vocab, dim);
-        !r)
-      std::printf("  q8 error: %s\n", r.error().message.c_str());
-    const bool bitwise = std::memcmp(cpu_same.data(), gpu_same.data(), vocab * sizeof(float)) == 0;
-    std::printf("%s Q8_0 lm_head bitwise vs CPU on same normed\n", bitwise ? "PASS" : "FAIL");
-    if (!bitwise) ++g_failures;
+  test_rmsnorm(*metal, h, wn, eps, dim, normed_cpu, normed_gpu);
+  test_q8_lm_head(*metal, rng, normed_cpu, normed_gpu, vocab, dim);
+  test_q4_lm_head(*metal, rng, normed_cpu, vocab, dim);
+  test_f16_lm_head(*metal, rng, normed_cpu, normed_gpu, vocab, dim);
 
-    std::vector<float> cpu_tail, gpu_tail(vocab, 0.0f);
-    cpu_tail_quant(dbinfer::tensor::matvec_q8_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_tail);
-    if (auto r = metal->mul_mat_q8_0(w.data(), normed_gpu.data(), gpu_tail.data(), 1, vocab, dim);
-        !r)
-      std::printf("  q8 tail error: %s\n", r.error().message.c_str());
-    const float e = max_abs_err(cpu_tail, gpu_tail);
-    check(e <= 1e-4f, "Q8_0 tail (rmsnorm+lm_head) GPU vs CPU within 1e-4", e);
-  }
-
-  // Q4_0 lm_head.
-  {
-    std::vector<std::byte> w = rand_weight_q4(rng, vocab, dim);
-    std::vector<float> cpu_same(vocab, 0.0f), gpu_same(vocab, 0.0f);
-    cpu_tail_quant(dbinfer::tensor::matvec_q4_0_scalar, w.data(), normed_cpu, vocab, dim, cpu_same);
-    if (auto r = metal->mul_mat_q4_0(w.data(), normed_cpu.data(), gpu_same.data(), 1, vocab, dim);
-        !r)
-      std::printf("  q4 error: %s\n", r.error().message.c_str());
-    const bool bitwise = std::memcmp(cpu_same.data(), gpu_same.data(), vocab * sizeof(float)) == 0;
-    std::printf("%s Q4_0 lm_head bitwise vs CPU on same normed\n", bitwise ? "PASS" : "FAIL");
-    if (!bitwise) ++g_failures;
-  }
-
-  // F16 lm_head, tolerance only (the f16 matvec reorders its fold).
-  {
-    std::vector<std::uint16_t> w = rand_weight_f16(rng, vocab, dim);
-    std::vector<float> cpu(vocab, 0.0f), gpu(vocab, 0.0f);
-    dbinfer::tensor::matvec_f16(w.data(), normed_cpu.data(), cpu.data(), vocab, dim);
-    if (auto r = metal->mul_mat_f16(w.data(), normed_gpu.data(), gpu.data(), 1, vocab, dim); !r)
-      std::printf("  f16 error: %s\n", r.error().message.c_str());
-    const float e = max_abs_err(cpu, gpu);
-    check(e <= 1e-3f, "F16 tail (rmsnorm+lm_head) GPU vs CPU within 1e-3", e);
-  }
-
-  std::printf("---\n%d checks failed\n", g_failures);
-  return g_failures == 0 ? 0 : 1;
+  return dbinfer::test::summary();
 }

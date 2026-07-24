@@ -15,6 +15,7 @@ std::size_t speculative_merge(std::span<const std::int32_t> draft,
     out.push_back(draft[j]);
     ++j;
   }
+
   // target[j] is the correction at the first mismatch, or target[k] as the free
   // bonus token when every draft token was accepted.
   out.push_back(target[j]);
